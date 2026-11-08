@@ -23,7 +23,7 @@ enum Focus {
                                 "com.mitchellh.ghostty", "dev.warp.Warp-Stable", "net.kovidgoyal.kitty",
                                 "com.github.wez.wezterm", "co.zeit.hyper", "com.microsoft.VSCode"]
 
-    static var refuseList: [String] { UserDefaults.standard.stringArray(forKey: "refuseKeysTo") ?? builtInRefuse }
+    static var refuseList: [String] { LaunchSettings.refuseKeysTo ?? builtInRefuse }
 
     /// Throws (nothing posted) when the keys would reach the wrong app. While the cursor is hidden
     /// (an app has captured the mouse) its HID tap takes every key first, so only keyTarget is checked then.

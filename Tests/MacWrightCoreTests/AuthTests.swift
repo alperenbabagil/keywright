@@ -183,6 +183,39 @@ final class HTTPAuthTests: XCTestCase {
         XCTAssertEqual(status, 404)
     }
 
+    /// With approval on, a new session waits for the owner's answer, sees which process connects,
+    /// and then answers only that process.
+    func testSessionsNeedApprovalAndStayWithTheirProcess() async throws {
+        let seen = Box<PeerProcess?>(nil)
+        let allow = Box(false)
+        await host.setApproveSession { peer in seen.value = peer; return allow.value }
+        let auth = "Bearer \(HTTPAuthTests.token)"
+
+        let (denied, _, _) = try await post(initialize, auth: auth)
+        XCTAssertEqual(denied, 403)
+        XCTAssertEqual(seen.value?.pid, getpid())          // the client here is this test process
+
+        allow.value = true
+        let (ok, headers, _) = try await post(initialize, auth: auth)
+        XCTAssertEqual(ok, 200)
+        let sid = try XCTUnwrap(headers.value(forHTTPHeaderField: "Mcp-Session-Id"))
+        let (same, _, _) = try await post(#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#, auth: auth, session: sid)
+        XCTAssertEqual(same, 200)
+
+        // Another process with the token and the session ID is still refused.
+        let curl = Process()
+        curl.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+        curl.arguments = ["-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", base.absoluteString,
+                          "-H", "Authorization: \(auth)", "-H", "Mcp-Session-Id: \(sid)", "-H", "MCP-Protocol-Version: 2025-06-18",
+                          "-H", "Content-Type: application/json", "-H", "Accept: application/json, text/event-stream",
+                          "-d", #"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#]
+        let out = Pipe()
+        curl.standardOutput = out
+        try curl.run()
+        curl.waitUntilExit()
+        XCTAssertEqual(String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self), "403")
+    }
+
     func testAcceptsTokenAndServesMCP() async throws {
         let auth = "Bearer \(HTTPAuthTests.token)"
         let (status, headers, body) = try await post(initialize, auth: auth)
@@ -237,5 +270,15 @@ final class HTTPAuthTests: XCTestCase {
             _ = try await post(initialize, auth: auth)
             XCTFail("connected after stop")
         } catch {}
+    }
+}
+
+final class Box<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var v: T
+    init(_ v: T) { self.v = v }
+    var value: T {
+        get { lock.withLock { v } }
+        set { lock.withLock { v = newValue } }
     }
 }

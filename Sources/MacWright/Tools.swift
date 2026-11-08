@@ -77,7 +77,7 @@ enum Tools {
     }
 
     /// Default for `humanQuietMs` (`defaults write com.kuarasoft.macwright humanQuietMs -int 500`); 0 = off.
-    static var defaultHumanQuietMs: Double { UserDefaults.standard.double(forKey: "humanQuietMs") }
+    static var defaultHumanQuietMs: Double { LaunchSettings.humanQuietMs }
 
     static let watchProps: [String: Value] = [
         "watch": ["description": .string("Record what taps actually saw during this call and return it as `observed`: true or \"session\" (session tap), \"hid\" (HID tap, where HID-level apps listen) or \"both\". The result is read after a fence event has reached every tap, so all of the call's events have had their chance to arrive; observed.complete is false (and fence.missing names the tap) when a tap never got it."),

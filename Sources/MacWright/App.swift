@@ -10,14 +10,56 @@ import MacWrightCore
 import ServiceManagement
 import SwiftUI
 
+/// Settings that affect safety, read once at launch. Agents can run `defaults write`, so a value
+/// changed while MacWright runs must not take effect until a human restarts and unlocks it.
+enum LaunchSettings {
+    nonisolated(unsafe) private(set) static var port: UInt16 = 47615
+    nonisolated(unsafe) private(set) static var refuseKeysTo: [String]?
+    nonisolated(unsafe) private(set) static var humanQuietMs: Double = 0
+
+    static func load() {
+        let d = UserDefaults.standard
+        let p = d.integer(forKey: "port")
+        port = p > 0 && p < 65536 ? UInt16(p) : 47615
+        refuseKeysTo = d.stringArray(forKey: "refuseKeysTo")
+        humanQuietMs = d.double(forKey: "humanQuietMs")
+    }
+}
+
+/// Asks the owner, one request at a time, whether a process may start an MCP session. An
+/// approved pid is remembered until the next lock; an unidentified process is refused.
+actor SessionApprovals {
+    private var approved: Set<Int32> = []
+    private var tail: Task<Bool, Never>?
+
+    func reset() { approved = [] }
+    private func isApproved(_ pid: Int32) -> Bool { approved.contains(pid) }
+    private func add(_ pid: Int32) { approved.insert(pid) }
+
+    func ask(_ peer: PeerProcess?) async -> Bool {
+        guard let peer else {
+            Log.write("connection refused: the connecting process couldn't be identified")
+            return false
+        }
+        if approved.contains(peer.pid) { return true }
+        let previous = tail
+        let t = Task { () -> Bool in
+            _ = await previous?.value
+            if await self.isApproved(peer.pid) { return true }
+            let ok = await AppState.shared.askOwner(peer)
+            if ok { await self.add(peer.pid) }
+            return ok
+        }
+        tail = t
+        return await t.value
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     static let shared = AppState()
     nonisolated static let version = "1.2.0"
-    nonisolated static var port: UInt16 {
-        let p = UserDefaults.standard.integer(forKey: "port")
-        return p > 0 && p < 65536 ? UInt16(p) : 47615
-    }
+    nonisolated static var port: UInt16 { LaunchSettings.port }
     nonisolated static var serverAddress: String { "http://127.0.0.1:\(port)/mcp" }
 
     @Published var paused = false
@@ -38,6 +80,9 @@ final class AppState: ObservableObject {
     /// e.g. "locks in 12 min", refreshed by the timer.
     @Published var autoLockIn: String?
     private var unlockedAt: Date?
+    /// Programs approved since the last unlock, for the menu ("claude (pid 123) in Terminalo").
+    @Published var approvedClients: [String] = []
+    let approvals = SessionApprovals()
 
     nonisolated(unsafe) private static var currentToken = ""
     private var host: MCPHTTPHost?
@@ -56,6 +101,7 @@ final class AppState: ObservableObject {
     }
 
     func start() {
+        LaunchSettings.load()
         Self.currentToken = token
         Control.shared.onChange = { [weak self] in self?.syncControl() }
         refreshPermissions()
@@ -80,6 +126,14 @@ final class AppState: ObservableObject {
 
     func startServer() {
         let host = MCPHTTPHost(port: Self.port, token: { AppState.currentToken }, serverFactory: { await Tools.makeServer() })
+        let approvals = self.approvals
+        // Before listening, so no session can start unapproved.
+        let gate = DispatchSemaphore(value: 0)
+        Task.detached {
+            await host.setApproveSession { peer in await approvals.ask(peer) }
+            gate.signal()
+        }
+        gate.wait()
         host.onRequest = { method, path, status in
             if status >= 400 { Log.write("http \(method) \(path) → \(status)") }
         }
@@ -132,9 +186,35 @@ final class AppState: ObservableObject {
         serverError = nil
         locked = true
         unlockedAt = nil
+        approvedClients = []
+        let approvals = self.approvals
+        Task { await approvals.reset() }
         lockReason = reason
         autoLockIn = nil
         Log.write("locked: MCP server stopped" + (reason.map { " (auto-lock: \($0))" } ?? ""))
+    }
+
+    // MARK: Connection approval
+
+    /// Touch ID / password prompt for one connecting process. Refused while locked.
+    func askOwner(_ peer: PeerProcess) async -> Bool {
+        guard !locked else { return false }
+        let app = Peer.responsibleApp(of: peer.pid)
+        let who = "\(peer.name) (pid \(peer.pid))" + (app.map { " in \($0)" } ?? "")
+        let ctx = LAContext()
+        ctx.localizedCancelTitle = "Refuse"
+        NSApp.activate(ignoringOtherApps: true)
+        do {
+            let ok = try await ctx.evaluatePolicy(.deviceOwnerAuthentication,
+                                                  localizedReason: "let \(who) control this Mac through MacWright. Program: \(peer.path)")
+            guard ok, !locked else { return false }
+            approvedClients.append(who)
+            Log.write("connection approved: \(who) \(peer.path)")
+            return true
+        } catch {
+            Log.write("connection refused by the owner: \(who) \(peer.path)")
+            return false
+        }
     }
 
     // MARK: Auto-lock
@@ -173,19 +253,7 @@ final class AppState: ObservableObject {
     func setLimits(_ new: AutoLockLimits) {
         guard new != limits else { return }
         guard limits.loosens(to: new) else { applyLimits(new); return }
-        let ctx = LAContext()
-        ctx.localizedCancelTitle = "Keep current limits"
-        NSApp.activate(ignoringOtherApps: true)
-        Task { @MainActor in
-            do {
-                if try await ctx.evaluatePolicy(.deviceOwnerAuthentication,
-                                                localizedReason: "let MacWright stay unlocked longer: lock \(new.summary)") {
-                    applyLimits(new)
-                }
-            } catch {
-                Log.write("auto-lock change refused: \(error.localizedDescription)")
-            }
-        }
+        authorize("let MacWright stay unlocked longer: lock \(new.summary)") { self.applyLimits(new) }
     }
 
     private func applyLimits(_ new: AutoLockLimits) {
@@ -215,6 +283,33 @@ final class AppState: ObservableObject {
         if p != permissions { permissions = p }
         let login = SMAppService.mainApp.status == .enabled
         if login != launchAtLogin { launchAtLogin = login }
+    }
+
+    /// Runs [action] once the owner confirms with Touch ID or the login password. Every action
+    /// that hands out the token or weakens a protection goes through here, so an agent that clicks
+    /// MacWright's menu (by screen position) gets nothing.
+    func authorize(_ reason: String, then action: @escaping @MainActor () -> Void) {
+        let ctx = LAContext()
+        NSApp.activate(ignoringOtherApps: true)
+        Task { @MainActor in
+            do {
+                if try await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { action() }
+            } catch {
+                Log.write("not authorized (\(reason)): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Copies a secret, then clears the clipboard after 60 s unless something else was copied since.
+    func copySecret(_ s: String, what: String) {
+        copy(s, what: what)
+        let stamp = NSPasteboard.general.changeCount
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
+            if NSPasteboard.general.changeCount == stamp {
+                NSPasteboard.general.clearContents()
+                Log.write("menu: cleared \(what) from the clipboard")
+            }
+        }
     }
 
     func togglePause() { Control.shared.setPaused(!Control.shared.paused) }
@@ -282,6 +377,14 @@ struct MenuContent: View {
             Text("MCP server: \(AppState.serverAddress)")
         }
         if !state.locked {
+            if state.approvedClients.isEmpty {
+                Text("No agent approved yet — each new one asks for Touch ID")
+            } else {
+                Menu("Approved agents (\(state.approvedClients.count))") {
+                    ForEach(state.approvedClients, id: \.self) { Text($0) }
+                    Text("Lock forgets them")
+                }
+            }
             Text((state.paused ? "Paused — tool calls fail with \"paused\"" : (state.busy ? "Running a tool call…" : "Ready"))
                  + (state.autoLockIn.map { " · \($0)" } ?? ""))
             Button("Lock (stop the server)") { state.lock() }
@@ -312,11 +415,20 @@ struct MenuContent: View {
             }
         }
         Divider()
-        Button("Copy Claude Code command") { state.copy(state.claudeCommand, what: "Claude Code command") }
+        // The token never shows in the menu, and getting or changing it needs Touch ID.
+        Button("Copy Claude Code command…") {
+            state.authorize("copy the MacWright token (in the Claude Code command) to the clipboard") {
+                state.copySecret(state.claudeCommand, what: "Claude Code command")
+            }
+        }
         Menu("Token") {
-            Text(state.token)
-            Button("Copy token") { state.copy(state.token, what: "token") }
-            Button("Regenerate token") { state.regenerateToken() }
+            Button("Copy token…") {
+                state.authorize("copy the MacWright token to the clipboard") { state.copySecret(state.token, what: "token") }
+            }
+            Button("Regenerate token…") {
+                state.authorize("replace the MacWright token (connected agents must be added again)") { state.regenerateToken() }
+            }
+            Text("Copied secrets clear from the clipboard after 60 s")
         }
         Divider()
         Toggle("Pause  (⌃⌥⌘⎋)", isOn: Binding(get: { state.paused }, set: { Control.shared.setPaused($0) }))

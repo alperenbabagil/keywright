@@ -43,8 +43,9 @@ Without one, the build is signed ad hoc. After a rebuild, quit and reopen the ap
 
 1. `./build.sh`, then `open /Applications/MacWright.app`.
 2. Unlock with Touch ID or your password, and grant the three permissions from the menu.
-3. Pick **Copy Claude Code command** in the menu and run it in your terminal.
-4. Ask the agent to call `status`, then `selftest` to check that posted input arrives.
+3. Pick **Copy Claude Code command…** in the menu (Touch ID) and run it in your terminal.
+4. Start Claude Code. When it connects, MacWright asks you to approve it with Touch ID.
+5. Ask the agent to call `status`, then `selftest` to check that posted input arrives.
 
 ## Menu-bar app + MCP server
 
@@ -62,6 +63,17 @@ Lock (and Quit) also stops a tool call that is already running: typing, a drag, 
 trigger or a screen recording stops within about 0.1 s, a recording cut short is deleted, and a
 result that finishes after the lock is thrown away, so no screenshot or AX tree leaves once
 you've locked. `watch_focus` stops too.
+
+### Connection approval
+
+The token alone isn't enough: Claude Code keeps it in plain text in `~/.claude.json`, where any
+process running as you could read it. So every new MCP session waits for you. MacWright finds the
+process on the other end of the connection and asks, with Touch ID or your password, "let claude
+(pid 4242) in Terminalo control this Mac through MacWright", with the program's full path. Refuse,
+and the client gets 403. An approved process isn't asked again until you lock; Lock forgets every
+approval. A session only answers the process it was approved for, so another program that learns
+its session ID gets 403 too, and a process MacWright can't identify is refused without asking.
+Each `macwright-run` is a new process, so each run asks once.
 
 **Auto-lock** (menu → Auto-lock) locks MacWright by itself, whichever comes first:
 
@@ -112,20 +124,23 @@ inside the app being checked.
 The menu shows:
 
 - Server address: Streamable HTTP at `http://127.0.0.1:47615/mcp`. It listens on 127.0.0.1
-  only; change the port with `defaults write com.kuarasoft.macwright port -int <port>`.
+  only; change the port with `defaults write com.kuarasoft.macwright port -int <port>` and
+  restart MacWright (settings are read at launch only).
 - Permissions: Accessibility, Screen Recording and Input Monitoring. Click one to get the
   system prompt (if it isn't granted yet) and the matching System Settings pane.
   **Copy terminal check command** is there too (see Check your terminal).
-- **Copy Claude Code command**, which copies:
+- **Approved agents**: the programs you approved since unlocking (see Connection approval).
+- **Copy Claude Code command…** (Touch ID), which copies:
 
 ```bash
 claude mcp add --transport http macwright http://127.0.0.1:47615/mcp --header "Authorization: Bearer <token>"
 ```
 
-- Token: shows the token, copies it, or regenerates it. The token is created on first run and
-  kept in the login Keychain (service `com.kuarasoft.macwright`). Every request needs
-  `Authorization: Bearer <token>`. After you regenerate it, run `claude mcp remove macwright`
-  and add the server again.
+- Token: copies or regenerates the token, each after Touch ID. The menu never shows it, and a
+  copied token (or Claude Code command) is cleared from the clipboard after 60 s. The token is
+  created on first run and kept in the login Keychain (service `com.kuarasoft.macwright`).
+  Every request needs `Authorization: Bearer <token>`. After you regenerate it, run
+  `claude mcp remove macwright` and add the server again.
 - **Pause** (or the global hotkey **⌃⌥⌘⎋**): while paused, tool calls fail with `paused`.
   Pausing, quitting and any failed tool call release every held button and key.
 - Recent tool calls, with time, result and duration. The log is in
@@ -175,7 +190,7 @@ action. Calls run one at a time.
 | Focus | `watch_focus {action: start\|read\|stop, apps?, since?, bounceMs?}` (frontmost-app and key/main-window timeline, with bounces) |
 | Events | `record_events {seconds, types?, taps?}` (full dump of HID + session taps to a JSON file), `watch_events {seconds, tap?, types?}` |
 | Mouse | `warp {x,y}`, `move {dx,dy,steps,intervalMs,modifiers?}`, `drag {dx,dy,steps,intervalMs,button?,modifiers?}` or `drag {toEdge,display?,dwellMs?,pushSteps?,holdMs?,release?}` (a file drag onto an edge), `move_to {x,y,durationMs,modifiers?}`, `push_edge {edge,display?,along,distance,steps,intervalMs,dwellMs?,modifiers?}` (modifiers held through the whole gesture, e.g. ⌘ or fn), `click {button,count,x?,y?,modifiers?}`, `down/up {button}`, `force_click {x?,y?}`, `scroll {dx,dy,unit,phases}` |
-| Keyboard | `key {key,modifiers?,holdMs?,layoutText?}` (events carry the current layout's text, like hardware), `type_text {text,intervalMs?}`, `hold {keys,modifiers,ms}`, `chord {hold, steps}` (modifiers held through several steps, e.g. ⌘ through a jump + Tab), `release_all`. Key tools take `keyTarget` and refuse while a terminal that may host the agent is active (`allowActive`, `refuseIfActive`, `defaults write com.kuarasoft.macwright refuseKeysTo -array …`) |
+| Keyboard | `key {key,modifiers?,holdMs?,layoutText?}` (events carry the current layout's text, like hardware), `type_text {text,intervalMs?}`, `hold {keys,modifiers,ms}`, `chord {hold, steps}` (modifiers held through several steps, e.g. ⌘ through a jump + Tab), `release_all`. Key tools take `keyTarget` and refuse while a terminal that may host the agent is active (`allowActive`, `refuseIfActive`, `defaults write com.kuarasoft.macwright refuseKeysTo -array …`, read at launch) |
 | Screen | `screenshot {display?,rect?,window?,scale=0.5,format}`, `wait_screen_stable`, `wait_for_screen_change`, `record {seconds,display?,path}` (macOS 15+) |
 | Windows/apps | `list_windows {app?}` (flags `systemPrompt` windows, such as TCC alerts, Gatekeeper, SecurityAgent, UserNotificationCenter and a showing notification banner, and lists them under `systemPrompts`), `launch_app`, `quit_app`, `activate_app`, `running_apps`, `open_url`, `open_file` |
 | Chrome | `chrome_profiles {channel?}` (directory, name, signed-in email), `open_chrome {urls?, profile?, newWindow?, incognito?, guest?, appUrl?, channel?, userDataDir?, remoteDebuggingPort?, args?}` (works whether Chrome is running or not; `profile` takes a directory, display name or email; returns the new window ids) |
@@ -202,7 +217,7 @@ Notes:
   previous call ended), `duringCall`, `kinds`, `lastAtMillis`, `msAgo`, `lastKind`, and
   `otherProcesses` when another app posted events. `status` has the totals. Input tools take
   `humanQuietMs`: the call fails without posting anything when human input arrived within that many
-  ms (default 0, or `defaults write com.kuarasoft.macwright humanQuietMs -int 500`).
+  ms (default 0, or `defaults write com.kuarasoft.macwright humanQuietMs -int 500`, read at launch).
 - **Focus timeline.** `watch_focus {action: "start"}` records `appActivated`/`appDeactivated`
   (NSWorkspace) and `focusedWindowChanged`/`mainWindowChanged` (AX observers on the frontmost app,
   every app that becomes frontmost, and `apps`), each with `t` (ms since start), pid, bundle id and
@@ -249,7 +264,7 @@ works the same on your Mac and on a CI machine with MacWright set up.
 
 ```bash
 swift build -c release --product macwright-run
-export MACWRIGHT_TOKEN=<token>   # menu: Token → Copy token (prefer this to --token, which other processes can see in ps)
+export MACWRIGHT_TOKEN=<token>   # menu: Token → Copy token… (prefer this to --token, which other processes can see in ps)
 .build/release/macwright-run examples/
 ```
 

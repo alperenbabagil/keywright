@@ -113,10 +113,15 @@ func isInitialize(_ body: Data) -> Bool {
 
 /// Creates and finds MCP sessions. Each `initialize` gets a fresh Server + stateful transport.
 actor SessionRouter {
-    struct Session { let server: Server; let transport: StatefulHTTPServerTransport; var lastUsed: Date }
+    /// [owner] is the process the session was approved for (nil when approval is off).
+    struct Session { let server: Server; let transport: StatefulHTTPServerTransport; var lastUsed: Date; let owner: Int32? }
     private var sessions: [String: Session] = [:]
     private let factory: @Sendable () async throws -> Server
     private let idleTimeout: TimeInterval
+    /// Asked before each new session; nil = every authenticated client may start one.
+    var approve: (@Sendable (PeerProcess?) async -> Bool)?
+
+    func setApprove(_ f: (@Sendable (PeerProcess?) async -> Bool)?) { approve = f }
 
     init(factory: @escaping @Sendable () async throws -> Server, idleTimeout: TimeInterval) {
         self.factory = factory
@@ -125,10 +130,14 @@ actor SessionRouter {
 
     var count: Int { sessions.count }
 
-    func handle(_ request: HTTPRequest) async -> HTTPResponse {
+    func handle(_ request: HTTPRequest, peer: PeerProcess?) async -> HTTPResponse {
         expire()
         let sid = request.header(HTTPHeaderName.sessionID)
         if let sid, var s = sessions[sid] {
+            // A session only answers the process it was approved for: knowing its ID isn't enough.
+            if let owner = s.owner, peer?.pid != owner {
+                return .error(statusCode: 403, .invalidRequest("Forbidden: this session belongs to another process"))
+            }
             s.lastUsed = Date()
             sessions[sid] = s
             let resp = await s.transport.handleRequest(request)
@@ -139,7 +148,12 @@ actor SessionRouter {
             return resp
         }
         if request.method.uppercased() == "POST", let body = request.body, isInitialize(body) {
-            return await create(request)
+            if let approve {
+                guard await approve(peer) else {
+                    return .error(statusCode: 403, .invalidRequest("Forbidden: the Mac's owner did not approve this connection"))
+                }
+            }
+            return await create(request, owner: approve == nil ? nil : peer?.pid)
         }
         if sid != nil { return .error(statusCode: 404, .invalidRequest("Not Found: Session not found or expired")) }
         return .error(statusCode: 400, .invalidRequest("Bad Request: Missing \(HTTPHeaderName.sessionID) header"))
@@ -150,13 +164,13 @@ actor SessionRouter {
         func generateSessionID() -> String { id }
     }
 
-    private func create(_ request: HTTPRequest) async -> HTTPResponse {
+    private func create(_ request: HTTPRequest, owner: Int32?) async -> HTTPResponse {
         let sid = UUID().uuidString
         let transport = StatefulHTTPServerTransport(sessionIDGenerator: FixedID(id: sid))
         do {
             let server = try await factory()
             try await server.start(transport: transport)
-            sessions[sid] = Session(server: server, transport: transport, lastUsed: Date())
+            sessions[sid] = Session(server: server, transport: transport, lastUsed: Date(), owner: owner)
             let resp = await transport.handleRequest(request)
             if case .error = resp {
                 sessions.removeValue(forKey: sid)
@@ -203,6 +217,12 @@ public final class MCPHTTPHost: @unchecked Sendable {
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private let connLock = NSLock()
     private var stopped = false
+    /// Asked before every new MCP session with the connecting process (nil if it couldn't be
+    /// found); return false to refuse it with 403. Approved sessions then only answer that pid.
+    public func setApproveSession(_ f: (@Sendable (PeerProcess?) async -> Bool)?) async {
+        await router.setApprove(f)
+    }
+
     /// Called (on an arbitrary queue) for each request: method, path, status.
     public var onRequest: (@Sendable (String, String, Int) -> Void)?
     /// Called when the listener's state changes: nil = ready, else an error text.
@@ -351,7 +371,11 @@ public final class MCPHTTPHost: @unchecked Sendable {
         if refuse(c, raw) { return }
         let req = HTTPRequest(method: raw.method, headers: raw.headers,
                               body: raw.body.isEmpty ? nil : raw.body, path: raw.path)
-        let resp = await router.handle(req)
+        var peer: PeerProcess?
+        if case .hostPort(_, let remote) = c.endpoint, let serverPort = port {
+            peer = Peer.find(clientPort: remote.rawValue, serverPort: serverPort)
+        }
+        let resp = await router.handle(req, peer: peer)
         onRequest?(raw.method, raw.path, resp.statusCode)
         if case .stream(let stream, let headers) = resp {
             writeStream(c, headers: headers, stream: stream)

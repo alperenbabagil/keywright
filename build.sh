@@ -26,6 +26,10 @@ cp "$BIN" "$APP/Contents/MacOS/MacWright"
 # The permission check, run inside a terminal (menu: Copy terminal check command). Signed first:
 # nested code has to be signed before the bundle around it.
 cp "$BINDIR/macwright-check" "$APP/Contents/Resources/macwright-check"
-codesign --force --sign "$IDENTITY" "$APP/Contents/Resources/macwright-check"
-codesign --force --sign "$IDENTITY" "$APP"
+# Hardened runtime (--options runtime): macOS then ignores DYLD_* variables, refuses libraries
+# not signed by the same team, and blocks debuggers. Without it, any process running as the user
+# could inject code into MacWright and use its permissions with no lock, token or Touch ID.
+codesign --force --options runtime --sign "$IDENTITY" "$APP/Contents/Resources/macwright-check"
+codesign --force --options runtime --sign "$IDENTITY" "$APP"
+codesign --verify --strict "$APP"
 echo "Built $APP"
