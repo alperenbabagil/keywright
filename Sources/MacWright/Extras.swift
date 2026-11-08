@@ -179,7 +179,7 @@ extension Tools {
         try Driver.shared.settle(at: target)
         let atEdge = Driver.shared.pos
         let dwell = try a.double("dwellMs", 0)
-        if dwell > 0 { usleep(UInt32(dwell * 1000)); try Control.shared.checkPaused() }
+        if dwell > 0 { sleepMs(dwell); try Control.shared.checkPaused() }
         let out: CGVector
         switch edge {
         case .left: out = CGVector(dx: -3, dy: 0)
@@ -190,7 +190,7 @@ extension Tools {
         let pushes = max(0, try a.int("pushSteps", dwell > 0 ? 8 : 0))
         if pushes > 0 { try Driver.shared.moveBy(Array(repeating: out, count: pushes), intervalMs: 15) }
         let hold = try a.double("holdMs", 0)
-        if hold > 0 { usleep(UInt32(hold * 1000)); try Control.shared.checkPaused() }
+        if hold > 0 { sleepMs(hold); try Control.shared.checkPaused() }
         return ["autoPressed": pressed, "released": release, "edge": edge.rawValue, "display": Int(disp.id),
                 "start": start, "positionAtEdge": atEdge,
                 "reachedEdge": abs(atEdge.x - target.x) < 1 && abs(atEdge.y - target.y) < 1]
@@ -215,7 +215,7 @@ extension Tools {
             switch name {
             case "sleepMs":
                 let ms = try Args(["ms": v]).double("ms", 0)
-                usleep(UInt32(min(60_000, max(0, ms)) * 1000))
+                sleepMs(min(60_000, ms))
                 try Control.shared.checkPaused()
                 done.append(["sleepMs": ms])
             case "release":

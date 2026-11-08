@@ -47,7 +47,7 @@ enum Displays {
     static func find(_ id: Int?) throws -> DisplayDesc {
         let list = all()
         if let id {
-            guard let d = list.first(where: { $0.id == UInt32(id) }) else {
+            guard let d = list.first(where: { UInt32(exactly: id) == $0.id }) else {
                 throw ToolError("no display with id \(id) (have \(list.map { Int($0.id) }))")
             }
             return d

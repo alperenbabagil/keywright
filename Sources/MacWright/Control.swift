@@ -19,6 +19,7 @@ final class Control: @unchecked Sendable {
     private var _locked = true
     private var _busy = 0
     private var _recent: [CallRecord] = []
+    private var _lastActivity = Date()
     /// Fired on the main queue whenever paused/busy/recent change.
     var onChange: (() -> Void)?
 
@@ -26,6 +27,10 @@ final class Control: @unchecked Sendable {
     var locked: Bool { lock.withLock { _locked } }
     var busy: Bool { lock.withLock { _busy > 0 } }
     var recent: [CallRecord] { lock.withLock { _recent } }
+    /// When a tool call last started or ended (or the owner unlocked): the idle auto-lock counts from here.
+    var lastActivity: Date { lock.withLock { _lastActivity } }
+
+    func touch() { lock.withLock { _lastActivity = Date() } }
 
     func setPaused(_ p: Bool) {
         lock.withLock { _paused = p }
@@ -43,13 +48,14 @@ final class Control: @unchecked Sendable {
     }
 
     func begin() {
-        lock.withLock { _busy += 1 }
+        lock.withLock { _busy += 1; _lastActivity = Date() }
         changed()
     }
 
     func end(_ rec: CallRecord) {
         lock.withLock {
             _busy -= 1
+            _lastActivity = Date()
             _recent.insert(rec, at: 0)
             if _recent.count > 40 { _recent.removeLast(_recent.count - 40) }
         }

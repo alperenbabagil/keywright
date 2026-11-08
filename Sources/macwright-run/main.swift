@@ -12,7 +12,8 @@ let usage = """
     and unlocked. Exit status: 0 all passed, 1 a test failed, 2 usage or connection error.
 
     Options:
-      --token <token>      Bearer token (default: $MACWRIGHT_TOKEN). Menu: Token → Copy token.
+      --token <token>      Bearer token (default: $MACWRIGHT_TOKEN, preferred: ps shows arguments).
+                           Menu: Token → Copy token.
       --server <url>       MCP endpoint (default: $MACWRIGHT_SERVER, or 127.0.0.1 on the app's port)
       --var <name>=<value> Set a variable for ${name}; repeatable, overrides the file's vars
       --junit <path>       Write a JUnit XML report

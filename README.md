@@ -63,6 +63,29 @@ trigger or a screen recording stops within about 0.1 s, a recording cut short is
 result that finishes after the lock is thrown away, so no screenshot or AX tree leaves once
 you've locked. `watch_focus` stops too.
 
+**Auto-lock** (menu → Auto-lock) locks MacWright by itself, whichever comes first:
+
+- **When idle:** after a stretch with no tool calls (default 15 min; never, 5, 15, 30, 60 or 120 min). A call that is still running counts as activity.
+- **At most:** a fixed time after you unlock, even in the middle of a call (default 4 h; no limit, 1, 2, 4, 8 or 12 h).
+
+The menu shows the time left ("Ready · locks in 12 min") and, after an automatic lock, why it
+locked. Making a limit stricter applies at once; making it longer or turning it off asks for
+Touch ID, so an agent clicking the menu can't extend its own session. The limits are read at
+launch only (editing the defaults while MacWright runs changes nothing) and the unlock prompt
+names them.
+
+The server also drops a client that hasn't sent its headers within 10 s, or its whole request
+within 30 s. A long tool call's reply isn't affected.
+
+Because anything can launch MacWright, a Touch ID prompt you didn't expect may come from an agent
+relaunching it. Only approve it when you meant to start a session.
+
+While a security dialog is on screen (a permission prompt, a password or Touch ID sheet,
+Gatekeeper, the screen-sharing picker), every click, key, scroll and AX action fails with
+"refused: a system security dialog is showing", and nothing is posted. An agent could otherwise
+trigger a permission prompt from its terminal and approve it itself, and that grant would outlive
+the lock. There is no override; answer the dialog yourself.
+
 ### Check your terminal
 
 The lock only protects you if MacWright is the only app with Accessibility, Screen Recording and
@@ -226,7 +249,7 @@ works the same on your Mac and on a CI machine with MacWright set up.
 
 ```bash
 swift build -c release --product macwright-run
-export MACWRIGHT_TOKEN=<token>   # menu: Token → Copy token
+export MACWRIGHT_TOKEN=<token>   # menu: Token → Copy token (prefer this to --token, which other processes can see in ps)
 .build/release/macwright-run examples/
 ```
 
@@ -272,7 +295,7 @@ runner usually is). Bring the app forward first and pass `keyTarget`, as in the 
 
 | Option | |
 |---|---|
-| `--token <token>` | Bearer token (default `$MACWRIGHT_TOKEN`) |
+| `--token <token>` | Bearer token (default `$MACWRIGHT_TOKEN`). Any process can read command-line arguments with `ps`, so prefer the variable |
 | `--server <url>` | MCP endpoint (default `$MACWRIGHT_SERVER`, or 127.0.0.1 on the app's port) |
 | `--var name=value` | Set or override a variable |
 | `--junit <path>` | Write a JUnit XML report for CI |

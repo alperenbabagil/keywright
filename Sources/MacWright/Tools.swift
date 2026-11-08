@@ -221,7 +221,7 @@ enum Tools {
             try Driver.shared.settle(at: plan.edgePoint)
             let atEdge = Driver.shared.pos
             let dwell = try a.double("dwellMs", 0)
-            if dwell > 0 { usleep(UInt32(dwell * 1000)); try Control.shared.checkPaused() }
+            if dwell > 0 { sleepMs(dwell); try Control.shared.checkPaused() }
             try Driver.shared.moveBy(plan.push, intervalMs: try a.double("intervalMs", 8))
             let end = Driver.shared.cursor
             return ToolOutput([
@@ -296,7 +296,14 @@ enum Tools {
             defer { Driver.shared.releaseModifiers(mods) }
             for c in codes { try Driver.shared.keyDown(c, layoutText: true) }
             defer { for c in codes.reversed() { Driver.shared.keyUp(c, layoutText: true) } }
-            usleep(UInt32(max(0, try a.double("ms", 500)) * 1000))
+            // In slices, so Lock or Pause lets go of the keys at once instead of after `ms`.
+            var left = clampedSleepMs(try a.double("ms", 500))
+            while left > 0 {
+                try Control.shared.checkPaused()
+                let chunk = min(left, 100)
+                sleepMs(chunk)
+                left -= chunk
+            }
             return ToolOutput()
         },
         ToolDef(name: "chord", description: "Hold modifiers while running steps in one call, then release them: e.g. hold [cmd], steps [{push_edge: {edge: right}}, {key: {key: tab}}, {sleepMs: 200}] is ⌘ held through a jump, Tab, then ⌘ up. Each step is one key: a tool (push_edge, move, move_to, drag, key, type_text, click, scroll, warp, down, up) with its arguments, sleepMs, or release (modifiers to let go early; [] = all held).",
@@ -564,7 +571,7 @@ enum Tools {
             while left > 0 {
                 try Control.shared.checkPaused()
                 let chunk = min(left, 100)
-                usleep(UInt32(chunk * 1000))
+                sleepMs(chunk)
                 left -= chunk
             }
             return ToolOutput()

@@ -191,11 +191,13 @@ enum AX {
     }
 
     static func perform(_ e: AXUIElement, _ action: String) throws {
+        try SecurityPrompt.refuseIfShowing()
         let r = AXUIElementPerformAction(e, action as CFString)
         guard r == .success else { throw ToolError("\(action) failed (AXError \(r.rawValue))") }
     }
 
     static func setValue(_ e: AXUIElement, _ v: Value) throws {
+        try SecurityPrompt.refuseIfShowing()
         let cf: CFTypeRef
         switch v {
         case .string(let s): cf = s as CFString
@@ -209,6 +211,7 @@ enum AX {
     }
 
     static func focus(_ e: AXUIElement) throws {
+        try SecurityPrompt.refuseIfShowing()
         let role = str(e, kAXRoleAttribute)
         if role == kAXWindowRole {
             AXUIElementSetAttributeValue(e, kAXMainAttribute as CFString, kCFBooleanTrue)

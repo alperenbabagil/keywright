@@ -204,7 +204,7 @@ final class Driver: @unchecked Sendable {
         let (type, button) = moveType()
         for (i, d) in deltas.enumerated() {
             try step(type, d.dx, d.dy, button: button)
-            if i < deltas.count - 1, intervalMs > 0 { usleep(UInt32(intervalMs * 1000)) }
+            if i < deltas.count - 1, intervalMs > 0 { sleepMs(intervalMs) }
         }
     }
 
@@ -242,6 +242,7 @@ final class Driver: @unchecked Sendable {
 
     func down(_ b: MouseButton, clickState: Int = 1) throws {
         try Control.shared.checkPaused()
+        try SecurityPrompt.refuseIfShowing()
         sync()
         mouseEvent(b.downType, b, clickState: clickState, pressure: 1)
         lock.withLock { if !heldButtons.contains(b) { heldButtons.append(b) } }
@@ -278,6 +279,7 @@ final class Driver: @unchecked Sendable {
     /// trackpad's mouse subtype (touch).
     func forceClick(stage2Ms: Double = 350) throws {
         try Control.shared.checkPaused()
+        try SecurityPrompt.refuseIfShowing()
         sync()
         func f(_ n: UInt32) -> CGEventField { CGEventField(rawValue: n)! }
         func pressure(phase: Int64, stage: Int64, _ p: Double, transition: Double = 0) {
@@ -333,6 +335,7 @@ final class Driver: @unchecked Sendable {
     /// positive dx = content moves right. With [phased], posts trackpad-style began/changed/ended.
     func scroll(dx: Double, dy: Double, pixel: Bool, phased: Bool, steps: Int, intervalMs: Double) throws {
         try Control.shared.checkPaused()
+        try SecurityPrompt.refuseIfShowing()
         sync()
         let units: CGScrollEventUnit = pixel ? .pixel : .line
         let n = phased ? max(2, steps) : max(1, steps)
@@ -351,7 +354,7 @@ final class Driver: @unchecked Sendable {
         for i in 0..<n {
             try Control.shared.checkPaused()
             wheel(xs[i], ys[i], phase: phased ? (i == 0 ? 1 : 2) : nil)  // kCGScrollPhaseBegan / Changed
-            usleep(UInt32(max(0, intervalMs) * 1000))
+            sleepMs(intervalMs)
         }
         if phased { wheel(0, 0, phase: 4) }  // kCGScrollPhaseEnded
     }
@@ -376,6 +379,7 @@ final class Driver: @unchecked Sendable {
     /// Presses the modifiers not already held, in order, and leaves them held.
     func pressModifiers(_ mods: [KeyMap.Modifier]) throws {
         try Control.shared.checkPaused()
+        try SecurityPrompt.refuseIfShowing()
         let events = lock.withLock { () -> [SynthKey] in
             let (ev, now) = KeyFlags.press(mods, held: heldMods)
             heldMods = now
@@ -400,6 +404,7 @@ final class Driver: @unchecked Sendable {
 
     func keyDown(_ code: CGKeyCode, text: String? = nil, layoutText: Bool = false) throws {
         try Control.shared.checkPaused()
+        try SecurityPrompt.refuseIfShowing()
         lock.withLock { if !heldKeys.contains(code) { heldKeys.append(code) } }
         let flags = keyFlagsNow(code)
         postKey(SynthKey(.keyDown, code, flags), text: text ?? (layoutText ? LayoutText.text(keyCode: code, flags: flags) : nil))
@@ -416,7 +421,7 @@ final class Driver: @unchecked Sendable {
         try pressModifiers(mods)
         defer { releaseModifiers(mods) }
         try keyDown(code, layoutText: layoutText)
-        usleep(UInt32(max(holdMs, 20) * 1000))
+        sleepMs(max(holdMs, 20))
         keyUp(code, layoutText: layoutText)
         usleep(5000)
     }
@@ -444,7 +449,7 @@ final class Driver: @unchecked Sendable {
                 start += 20
             }
             if needShift { releaseModifiers([.shift]) }
-            usleep(UInt32(max(intervalMs, 1) * 1000))
+            sleepMs(max(intervalMs, 1))
         }
     }
 

@@ -29,6 +29,15 @@ final class AppState: ObservableObject {
     @Published var unlocking = false
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
     @Published private(set) var token = TokenStore.loadOrCreate()
+    /// Read once at launch and then only changed through the menu: an agent editing the defaults
+    /// while MacWright runs changes nothing, and a value changed while it was quit is shown in the
+    /// unlock prompt.
+    @Published private(set) var limits = AppState.storedLimits()
+    /// Why MacWright last locked itself (nil after a manual lock or at launch).
+    @Published var lockReason: String?
+    /// e.g. "locks in 12 min", refreshed by the timer.
+    @Published var autoLockIn: String?
+    private var unlockedAt: Date?
 
     nonisolated(unsafe) private static var currentToken = ""
     private var host: MCPHTTPHost?
@@ -50,9 +59,15 @@ final class AppState: ObservableObject {
         Self.currentToken = token
         Control.shared.onChange = { [weak self] in self?.syncControl() }
         refreshPermissions()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-            Task { @MainActor in AppState.shared.refreshPermissions() }
+        let t = Timer(timeInterval: 2, repeats: true) { _ in
+            Task { @MainActor in
+                AppState.shared.refreshPermissions()
+                AppState.shared.checkAutoLock()
+            }
         }
+        // .common, so it keeps firing while the menu is open.
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
         Hotkey.register { AppState.shared.togglePause() }
         unlock()
         // Event taps must be serviced promptly; keep App Nap from throttling this menu-bar app.
@@ -90,10 +105,14 @@ final class AppState: ObservableObject {
             defer { unlocking = false }
             do {
                 guard try await ctx.evaluatePolicy(.deviceOwnerAuthentication,
-                                                   localizedReason: "start the MacWright server, which lets agents control this Mac") else { return }
+                                                   localizedReason: "start the MacWright server, which lets agents control this Mac. It locks again \(limits.summary)") else { return }
                 locked = false
+                lockReason = nil
+                unlockedAt = Date()
+                Control.shared.touch()
                 Control.shared.setLocked(false)
-                Log.write("unlocked by the owner")
+                Log.write("unlocked by the owner (auto-lock \(limits.summary))")
+                updateAutoLockIn()
                 startServer()
             } catch {
                 Log.write("unlock refused: \(error.localizedDescription)")
@@ -101,8 +120,8 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Stops the server; it needs a new unlock to start again.
-    func lock() {
+    /// Stops the server; it needs a new unlock to start again. [reason] is set when it locks itself.
+    func lock(reason: String? = nil) {
         guard !locked else { return }
         // First, so a call that is running right now stops at its next check.
         Control.shared.setLocked(true)
@@ -112,7 +131,70 @@ final class AppState: ObservableObject {
         host = nil
         serverError = nil
         locked = true
-        Log.write("locked: MCP server stopped")
+        unlockedAt = nil
+        lockReason = reason
+        autoLockIn = nil
+        Log.write("locked: MCP server stopped" + (reason.map { " (auto-lock: \($0))" } ?? ""))
+    }
+
+    // MARK: Auto-lock
+
+    nonisolated static func storedLimits() -> AutoLockLimits {
+        let d = UserDefaults.standard
+        let idle = d.object(forKey: "autoLockIdleMinutes") as? Int ?? AutoLockLimits.defaults.idleMinutes
+        let cap = d.object(forKey: "autoLockMaxHours") as? Int ?? AutoLockLimits.defaults.maxHours
+        return AutoLockLimits(idleMinutes: idle, maxHours: cap)
+    }
+
+    func checkAutoLock() {
+        guard !locked, let unlockedAt else { return }
+        if let why = limits.reason(now: Date(), unlockedAt: unlockedAt, lastActivity: Control.shared.lastActivity,
+                                   busy: Control.shared.busy) {
+            lock(reason: why)
+        } else {
+            updateAutoLockIn()
+        }
+    }
+
+    private func updateAutoLockIn() {
+        guard let unlockedAt, let left = limits.remaining(now: Date(), unlockedAt: unlockedAt,
+                                                          lastActivity: Control.shared.lastActivity,
+                                                          busy: Control.shared.busy) else {
+            if autoLockIn != nil { autoLockIn = nil }
+            return
+        }
+        let m = Int((left / 60).rounded(.up))
+        let text = m >= 120 ? "locks in \(m / 60) h \(m % 60) min" : "locks in \(max(1, m)) min"
+        if text != autoLockIn { autoLockIn = text }
+    }
+
+    /// Stricter limits apply at once. Looser ones (longer, or off) need Touch ID or the password,
+    /// so an agent clicking this menu can't keep the Mac unlocked longer.
+    func setLimits(_ new: AutoLockLimits) {
+        guard new != limits else { return }
+        guard limits.loosens(to: new) else { applyLimits(new); return }
+        let ctx = LAContext()
+        ctx.localizedCancelTitle = "Keep current limits"
+        NSApp.activate(ignoringOtherApps: true)
+        Task { @MainActor in
+            do {
+                if try await ctx.evaluatePolicy(.deviceOwnerAuthentication,
+                                                localizedReason: "let MacWright stay unlocked longer: lock \(new.summary)") {
+                    applyLimits(new)
+                }
+            } catch {
+                Log.write("auto-lock change refused: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func applyLimits(_ new: AutoLockLimits) {
+        limits = new
+        UserDefaults.standard.set(new.idleMinutes, forKey: "autoLockIdleMinutes")
+        UserDefaults.standard.set(new.maxHours, forKey: "autoLockMaxHours")
+        Log.write("auto-lock: \(new.summary)")
+        updateAutoLockIn()
+        checkAutoLock()
     }
 
     func stop() {
@@ -191,6 +273,7 @@ struct MenuContent: View {
     var body: some View {
         if state.locked {
             Text("🔒 Locked — the MCP server is off")
+            if let why = state.lockReason { Text("Locked itself: \(why)") }
             Button(state.unlocking ? "Waiting for Touch ID or password…" : "Unlock…") { state.unlock() }
                 .disabled(state.unlocking)
         } else if let err = state.serverError {
@@ -199,7 +282,8 @@ struct MenuContent: View {
             Text("MCP server: \(AppState.serverAddress)")
         }
         if !state.locked {
-            Text(state.paused ? "Paused — tool calls fail with \"paused\"" : (state.busy ? "Running a tool call…" : "Ready"))
+            Text((state.paused ? "Paused — tool calls fail with \"paused\"" : (state.busy ? "Running a tool call…" : "Ready"))
+                 + (state.autoLockIn.map { " · \($0)" } ?? ""))
             Button("Lock (stop the server)") { state.lock() }
         }
         Divider()
@@ -210,6 +294,22 @@ struct MenuContent: View {
             }
             // Only MacWright should hold these: a terminal that does lets agents skip the lock.
             Button("Copy terminal check command") { state.copy(state.checkCommand, what: "terminal check command") }
+        }
+        Section("Auto-lock") {
+            Menu("When idle: \(state.limits.idleMinutes == 0 ? "never" : "after \(state.limits.idleMinutes) min")") {
+                ForEach(AutoLockLimits.idleChoices, id: \.self) { m in
+                    Button("\(m == state.limits.idleMinutes ? "✓ " : "")\(m == 0 ? "Never" : "After \(m) min without a tool call")") {
+                        state.setLimits(AutoLockLimits(idleMinutes: m, maxHours: state.limits.maxHours))
+                    }
+                }
+            }
+            Menu("At most: \(state.limits.maxHours == 0 ? "no limit" : "\(state.limits.maxHours) h after unlocking")") {
+                ForEach(AutoLockLimits.maxChoices, id: \.self) { h in
+                    Button("\(h == state.limits.maxHours ? "✓ " : "")\(h == 0 ? "No limit" : "\(h) h after unlocking, busy or not")") {
+                        state.setLimits(AutoLockLimits(idleMinutes: state.limits.idleMinutes, maxHours: h))
+                    }
+                }
+            }
         }
         Divider()
         Button("Copy Claude Code command") { state.copy(state.claudeCommand, what: "Claude Code command") }

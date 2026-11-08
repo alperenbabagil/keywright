@@ -23,26 +23,50 @@ public enum HTTPParse {
     case done(RawHTTPRequest, consumed: Int)
 }
 
-/// Parses one HTTP/1.1 request from the front of [buf] (Content-Length or chunked bodies).
-public func parseHTTPRequest(_ buf: Data) -> HTTPParse {
+/// Largest request body accepted, whether sent with Content-Length or chunked.
+public let maxHTTPBody = 32 * 1024 * 1024
+
+/// The request line and headers, once they have all arrived (the body may still be on its way),
+/// so the token can be checked before any body is buffered. Nil while incomplete or malformed.
+public func parseHTTPHead(_ buf: Data) -> RawHTTPRequest? {
+    guard case .some(.success(let h)) = head(buf) else { return nil }
+    return h.request
+}
+
+private func head(_ buf: Data) -> Result<(request: RawHTTPRequest, end: Data.Index), HeadError>? {
     let sep = Data("\r\n\r\n".utf8)
     guard let headEnd = buf.range(of: sep) else {
-        return buf.count > 64 * 1024 ? .bad("headers too large") : .incomplete
+        return buf.count > 64 * 1024 ? .failure(HeadError(why: "headers too large")) : nil
     }
-    guard let head = String(data: buf[buf.startIndex..<headEnd.lowerBound], encoding: .utf8) else { return .bad("bad header encoding") }
-    var lines = head.components(separatedBy: "\r\n")
+    guard let text = String(data: buf[buf.startIndex..<headEnd.lowerBound], encoding: .utf8) else { return .failure(HeadError(why: "bad header encoding")) }
+    var lines = text.components(separatedBy: "\r\n")
     let requestLine = lines.removeFirst().split(separator: " ")
-    guard requestLine.count >= 2 else { return .bad("bad request line") }
+    guard requestLine.count >= 2 else { return .failure(HeadError(why: "bad request line")) }
     var headers: [String: String] = [:]
     for line in lines {
         guard let colon = line.firstIndex(of: ":") else { continue }
         headers[String(line[..<colon]).trimmingCharacters(in: .whitespaces)] =
             String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
     }
-    var req = RawHTTPRequest(method: String(requestLine[0]).uppercased(),
+    let req = RawHTTPRequest(method: String(requestLine[0]).uppercased(),
                              path: String(requestLine[1].split(separator: "?", maxSplits: 1).first ?? ""),
                              headers: headers, body: Data())
-    let bodyStart = headEnd.upperBound
+    return .success((req, headEnd.upperBound))
+}
+
+private struct HeadError: Error { let why: String }
+
+/// Parses one HTTP/1.1 request from the front of [buf] (Content-Length or chunked bodies).
+public func parseHTTPRequest(_ buf: Data) -> HTTPParse {
+    let sep = Data("\r\n\r\n".utf8)
+    let parsed: (request: RawHTTPRequest, end: Data.Index)
+    switch head(buf) {
+    case nil: return .incomplete
+    case .failure(let e): return .bad(e.why)
+    case .success(let h): parsed = h
+    }
+    var req = parsed.request
+    let bodyStart = parsed.end
     if req.header("Transfer-Encoding")?.lowercased().contains("chunked") == true {
         var i = bodyStart
         var body = Data()
@@ -50,7 +74,10 @@ public func parseHTTPRequest(_ buf: Data) -> HTTPParse {
             guard let lineEnd = buf[i...].range(of: Data("\r\n".utf8)) else { return .incomplete }
             let sizeText = String(data: buf[i..<lineEnd.lowerBound], encoding: .utf8)?
                 .split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-            guard let size = Int(sizeText, radix: 16) else { return .bad("bad chunk size") }
+            // Hex digits only (Int(radix:) would take a sign), and never past the body limit, so
+            // the index arithmetic below can't overflow or go backwards.
+            guard !sizeText.isEmpty, sizeText.count <= 8, sizeText.allSatisfy(\.isHexDigit),
+                  let size = Int(sizeText, radix: 16), body.count + size <= maxHTTPBody else { return .bad("bad chunk size") }
             let dataStart = lineEnd.upperBound
             if size == 0 {
                 // Skip optional trailers up to the blank line.
@@ -66,7 +93,7 @@ public func parseHTTPRequest(_ buf: Data) -> HTTPParse {
         }
     }
     let length = Int(req.header("Content-Length") ?? "0") ?? -1
-    guard length >= 0, length <= 32 * 1024 * 1024 else { return .bad("bad Content-Length") }
+    guard length >= 0, length <= maxHTTPBody else { return .bad("bad Content-Length") }
     guard buf.endIndex - bodyStart >= length else { return .incomplete }
     req.body = buf[bodyStart..<bodyStart + length]
     return .done(req, consumed: bodyStart + length - buf.startIndex)
@@ -162,6 +189,11 @@ public final class MCPHTTPHost: @unchecked Sendable {
     public let host: String
     public let endpoint: String
     private let requestedPort: UInt16
+    /// A client must send its headers within headerTimeout and the whole request within
+    /// requestTimeout, or the connection is dropped, so idle or very slow clients can't pile up.
+    /// A response that streams for a long time (a long tool call) isn't affected.
+    private let headerTimeout: TimeInterval
+    private let requestTimeout: TimeInterval
     private let token: @Sendable () -> String
     private let router: SessionRouter
     private var listener: NWListener?
@@ -178,10 +210,13 @@ public final class MCPHTTPHost: @unchecked Sendable {
 
     public init(host: String = "127.0.0.1", port: UInt16, endpoint: String = "/mcp",
                 idleTimeout: TimeInterval = 6 * 3600,
+                headerTimeout: TimeInterval = 10, requestTimeout: TimeInterval = 30,
                 token: @escaping @Sendable () -> String,
                 serverFactory: @escaping @Sendable () async throws -> Server) {
         self.host = host
         self.requestedPort = port
+        self.headerTimeout = headerTimeout
+        self.requestTimeout = requestTimeout
         self.endpoint = endpoint
         self.token = token
         self.router = SessionRouter(factory: serverFactory, idleTimeout: idleTimeout)
@@ -255,38 +290,65 @@ public final class MCPHTTPHost: @unchecked Sendable {
         guard accepted else { c.cancel(); return }
         track(c)
         c.start(queue: queue)
-        receive(c, Data())
+        let progress = RequestProgress()
+        queue.asyncAfter(deadline: .now() + headerTimeout) { if !progress.head { c.cancel() } }
+        queue.asyncAfter(deadline: .now() + requestTimeout) { if !progress.done { c.cancel() } }
+        receive(c, Data(), checked: false, progress: progress)
     }
 
-    private func receive(_ c: NWConnection, _ buf: Data) {
+    /// How far a connection's request has arrived; only touched on `queue`.
+    private final class RequestProgress: @unchecked Sendable {
+        var head = false
+        var done = false
+    }
+
+    private func receive(_ c: NWConnection, _ buf: Data, checked: Bool, progress: RequestProgress) {
         c.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             var buf = buf
             if let data { buf.append(data) }
+            // Path and token are checked as soon as the headers are in, before any body is kept.
+            var checked = checked
+            if !checked, let head = parseHTTPHead(buf) {
+                progress.head = true
+                if self.refuse(c, head) { progress.done = true; return }
+                checked = true
+            }
             switch parseHTTPRequest(buf) {
             case .done(let req, _):
+                progress.head = true
+                progress.done = true
                 Task { await self.respond(c, req) }
             case .bad(let why):
+                progress.head = true
+                progress.done = true
                 self.write(c, status: 400, headers: ["Content-Type": "text/plain"], body: Data(why.utf8))
             case .incomplete:
-                if isComplete || error != nil { c.cancel() } else { self.receive(c, buf) }
+                if isComplete || error != nil { c.cancel() } else { self.receive(c, buf, checked: checked, progress: progress) }
             }
         }
     }
 
-    private func respond(_ c: NWConnection, _ raw: RawHTTPRequest) async {
+    /// Answers 404 or 401 and returns true when the request must go no further.
+    private func refuse(_ c: NWConnection, _ raw: RawHTTPRequest) -> Bool {
         guard raw.path == endpoint else {
             onRequest?(raw.method, raw.path, 404)
             write(c, status: 404, headers: ["Content-Type": "text/plain"], body: Data("Not Found".utf8))
-            return
+            return true
         }
         guard bearerMatches(raw.header("Authorization"), token: token()) else {
             onRequest?(raw.method, raw.path, 401)
             let body = #"{"jsonrpc":"2.0","error":{"code":-32001,"message":"Unauthorized: missing or wrong bearer token"},"id":null}"#
             write(c, status: 401, headers: ["Content-Type": "application/json",
                                             "WWW-Authenticate": #"Bearer realm="MacWright""#], body: Data(body.utf8))
-            return
+            return true
         }
+        return false
+    }
+
+    private func respond(_ c: NWConnection, _ raw: RawHTTPRequest) async {
+        // Checked again on the full request: the token may have been regenerated meanwhile.
+        if refuse(c, raw) { return }
         let req = HTTPRequest(method: raw.method, headers: raw.headers,
                               body: raw.body.isEmpty ? nil : raw.body, path: raw.path)
         let resp = await router.handle(req)

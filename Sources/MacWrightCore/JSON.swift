@@ -8,6 +8,22 @@ public struct ToolError: Error, CustomStringConvertible {
     public init(_ description: String) { self.description = description }
 }
 
+/// Sleep time in ms, clamped to 0...600 000 (NaN counts as 0).
+public func clampedSleepMs(_ ms: Double) -> Double {
+    ms.isNaN ? 0 : min(600_000, max(0, ms))
+}
+
+/// Sleeps `ms` milliseconds (clamped, see clampedSleepMs) without ever trapping on the
+/// conversion to usleep's microseconds.
+public func sleepMs(_ ms: Double) {
+    var left = clampedSleepMs(ms)
+    while left > 0 {
+        let chunk = min(left, 1000)
+        usleep(useconds_t(chunk * 1000))
+        left -= chunk
+    }
+}
+
 /// Typed access to a tool call's arguments, with readable errors for missing or mistyped ones.
 public struct Args {
     public let raw: [String: Value]
@@ -18,15 +34,23 @@ public struct Args {
         return false
     }
 
+    /// Largest magnitude accepted for a number: enough for any coordinate, duration or id, and
+    /// small enough that converting it (Int, UInt32 microseconds after clamping) can't trap.
+    public static let maxNumber = 1e12
+
     public func double(_ k: String) throws -> Double? {
+        let d: Double
         switch raw[k] {
         case nil, .null?: return nil
-        case .int(let i)?: return Double(i)
-        case .double(let d)?: return d
-        case .string(let s)?: if let d = Double(s) { return d }
-        default: break
+        case .int(let i)?: d = Double(i)
+        case .double(let x)?: d = x
+        case .string(let s)?:
+            guard let x = Double(s) else { throw ToolError("'\(k)' must be a number") }
+            d = x
+        default: throw ToolError("'\(k)' must be a number")
         }
-        throw ToolError("'\(k)' must be a number")
+        guard d.isFinite, abs(d) <= Self.maxNumber else { throw ToolError("'\(k)' must be a finite number no larger than 1e12") }
+        return d
     }
     public func double(_ k: String, _ def: Double) throws -> Double { try double(k) ?? def }
     public func req(_ k: String) throws -> Double {

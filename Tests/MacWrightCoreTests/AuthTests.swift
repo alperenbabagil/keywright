@@ -35,6 +35,28 @@ final class BearerTests: XCTestCase {
         guard case .done(let c, _) = parseHTTPRequest(Data(chunked.utf8)) else { return XCTFail() }
         XCTAssertEqual(String(data: c.body, encoding: .utf8), "hello")
     }
+
+    /// Crafted chunk sizes used to crash the parser (negative range, integer overflow).
+    func testBadChunkSizesAreRejectedNotCrashing() {
+        for size in ["-5", "7fffffffffffffff", "ffffffffffffffff0", "2000001"] {
+            let raw = "POST /mcp HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n\(size)\r\nabc\r\n0\r\n\r\n"
+            guard case .bad = parseHTTPRequest(Data(raw.utf8)) else { return XCTFail("chunk size \(size) not rejected") }
+        }
+        // Many small chunks can't add up past the body limit either.
+        var many = "POST /mcp HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+        let chunk = "100000\r\n" + String(repeating: "a", count: 0x100000) + "\r\n"
+        for _ in 0..<33 { many += chunk }
+        guard case .bad = parseHTTPRequest(Data(many.utf8)) else { return XCTFail("oversized chunked body accepted") }
+    }
+
+    func testHeadIsAvailableBeforeTheBody() {
+        let raw = "POST /mcp HTTP/1.1\r\nAuthorization: Bearer x\r\nContent-Length: 30000000\r\n\r\nab"
+        guard case .incomplete = parseHTTPRequest(Data(raw.utf8)) else { return XCTFail() }
+        let h = parseHTTPHead(Data(raw.utf8))
+        XCTAssertEqual(h?.path, "/mcp")
+        XCTAssertEqual(h?.header("authorization"), "Bearer x")
+        XCTAssertNil(parseHTTPHead(Data("POST /mcp HTTP/1.1\r\nAuth".utf8)))
+    }
 }
 
 /// Token auth on the real HTTP layer: a live MCPHTTPHost on an ephemeral port.
@@ -94,6 +116,65 @@ final class HTTPAuthTests: XCTestCase {
         XCTAssertEqual(status, 401)
         let (s2, _, _) = try await post(initialize, auth: HTTPAuthTests.token)  // no "Bearer"
         XCTAssertEqual(s2, 401)
+    }
+
+    /// The token is checked as soon as the headers arrive: a client without it gets 401 at once,
+    /// without MacWright buffering (or waiting for) a large body.
+    func testWrongTokenIsRefusedBeforeTheBody() throws {
+        let c = try rawSocket()
+        defer { close(c) }
+        let head = "POST /mcp HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer wrong\r\nContent-Length: 30000000\r\n\r\n"
+        _ = head.withCString { send(c, $0, strlen($0), 0) }
+        XCTAssertTrue(readReply(c).hasPrefix("HTTP/1.1 401"))
+    }
+
+    /// A client that connects and sends nothing (or only part of its headers) is dropped.
+    func testSilentAndSlowClientsAreDropped() throws {
+        let h = MCPHTTPHost(port: 0, headerTimeout: 0.3, requestTimeout: 0.8, token: { "t" },
+                            serverFactory: { Server(name: "x", version: "1") })
+        try h.start()
+        defer { h.stop() }
+        let saved = host
+        host = h
+        defer { host = saved }
+
+        let silent = try rawSocket()
+        defer { close(silent) }
+        let partial = try rawSocket()
+        defer { close(partial) }
+        _ = "POST /mcp HTTP/1.1\r\nHost: x\r\n".withCString { send(partial, $0, strlen($0), 0) }
+        // Headers complete with the right token, body never sent: dropped at the request timeout.
+        let slowBody = try rawSocket()
+        defer { close(slowBody) }
+        _ = "POST /mcp HTTP/1.1\r\nAuthorization: Bearer t\r\nContent-Length: 100\r\n\r\nab".withCString { send(slowBody, $0, strlen($0), 0) }
+
+        let t = Date()
+        XCTAssertEqual(readReply(silent), "")     // closed without a reply
+        XCTAssertEqual(readReply(partial), "")
+        XCTAssertLessThan(Date().timeIntervalSince(t), 1.5)
+        XCTAssertEqual(readReply(slowBody), "")
+        let total = Date().timeIntervalSince(t)
+        XCTAssertGreaterThan(total, 0.6)          // the head arrived, so only the request timeout applies
+        XCTAssertLessThan(total, 2)
+    }
+
+    func rawSocket() throws -> Int32 {
+        let c = socket(AF_INET, SOCK_STREAM, 0)
+        var tv = timeval(tv_sec: 3, tv_usec: 0)
+        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var a = sockaddr_in()
+        a.sin_family = sa_family_t(AF_INET)
+        a.sin_port = host.port!.bigEndian
+        a.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let r = withUnsafePointer(to: &a) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(c, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        guard r == 0 else { throw URLError(.cannotConnectToHost) }
+        return c
+    }
+
+    func readReply(_ c: Int32) -> String {
+        var buf = [UInt8](repeating: 0, count: 4096)
+        let n = recv(c, &buf, buf.count, 0)
+        return n > 0 ? String(decoding: buf[0..<n], as: UTF8.self) : ""
     }
 
     func testWrongPathIs404() async throws {

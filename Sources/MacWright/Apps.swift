@@ -86,6 +86,44 @@ enum Windows {
     }
 }
 
+/// Refuses input while a security dialog is on screen: a permission (TCC) prompt, a password or
+/// Touch ID sheet, Gatekeeper, the screen-sharing picker. An agent can make one appear (run a
+/// command that needs a permission) and then answer it with a click, a key or an AX press, and
+/// what that grants outlives MacWright's lock. macOS also blocks synthetic clicks on most of
+/// these, but that has been bypassed before. There is deliberately no override: an agent could
+/// set it. Notification banners don't count, or every banner would block input.
+enum SecurityPrompt {
+    static let owners: Set<String> = [
+        "UserNotificationCenter", "SecurityAgent", "CoreServicesUIAgent", "universalAccessAuthWarn",
+        "coreautha", "tccd", "TCC", "ScreenCaptureKit", "SystemUIServer Alert",
+    ]
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cached: (at: Date, owner: String?)?
+
+    /// The owner of a security dialog on screen now, or nil. Cached for 100 ms, so typing (one
+    /// check per key) doesn't list every window each time.
+    static func showing() -> String? {
+        if let c = lock.withLock({ cached }), Date().timeIntervalSince(c.at) < 0.1 { return c.owner }
+        let raw = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+        let owner = raw.first { w in
+            guard let o = w[kCGWindowOwnerName as String] as? String, owners.contains(o) else { return false }
+            if (w[kCGWindowAlpha as String] as? Double ?? 1) <= 0 { return false }
+            var b = CGRect.zero
+            if let d = w[kCGWindowBounds as String] as? NSDictionary { b = CGRect(dictionaryRepresentation: d) ?? .zero }
+            return b.width > 20 && b.height > 20
+        }?[kCGWindowOwnerName as String] as? String
+        lock.withLock { cached = (Date(), owner) }
+        return owner
+    }
+
+    /// Throws (nothing is posted) while a security dialog is showing.
+    static func refuseIfShowing() throws {
+        if let o = showing() {
+            throw ToolError("refused: a system security dialog is showing (\(o)). Only the Mac's owner may answer it; ask the human, then retry.")
+        }
+    }
+}
+
 enum Apps {
     static func running(_ bundleId: String) throws -> NSRunningApplication {
         if let a = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first { return a }
