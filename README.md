@@ -1,27 +1,115 @@
+<div align="center">
+
+<img src="Resources/AppIcon-1024.png" width="128" alt="Keywright icon">
+
 # Keywright
 
-**Let AI agents drive your Mac, but only while you say so.**
+### Agents drive. You hold the key.
 
-Keywright is a menu-bar app that gives an agent such as Claude Code the mouse, keyboard, screen,
-accessibility tree and clipboard of your Mac through an MCP server. It is the only app that holds
-the permissions to do that, it starts locked, and it opens only with your fingerprint or password.
+Let Claude Code, Codex, Cursor and friends click, type and see your Mac,<br>
+but only after your fingerprint opens the gate, and never once you lock it.
 
-## The problem
+![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000?logo=apple&logoColor=white)
+![Swift 6.1](https://img.shields.io/badge/Swift-6.1-F05138?logo=swift&logoColor=white)
+![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-3b5bdb)
+![Touch ID](https://img.shields.io/badge/unlock-Touch%20ID-2f9e44)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue)
+
+<a href="docs/media/keywright.mp4"><img src="docs/media/keywright-poster.jpg" width="820" alt="Watch the 49-second film: an agent's shell turns a Mac into a monster, then Keywright keeps agents on their playground"></a>
+
+<sub>▶ Click to watch the 49-second film</sub>
+
+</div>
+
+---
+
+## Your AI agent's shell is a monster
 
 To let an agent click, type or take screenshots, macOS has to grant Accessibility and Screen
 Recording to *some* app. Most Mac-control tools tell you to grant them to your terminal or IDE.
-From then on, every process started from that terminal has them: the agent, every command it
-runs, every script an `npm install` pulls in. Any of them can watch your screen and type into any
-app, at any time, and there is no switch to turn that off short of digging through System Settings.
+From then on, **every process started there has them**: the agent, every command it runs, every
+script an `npm install` pulls in. Any of them can watch your screen, type into your password
+manager and click **Allow** on a permission prompt for itself, at any time. There is no off switch
+short of digging through System Settings.
 
-Keywright moves those permissions out of the terminal and into one signed app with a lock:
+## Keep your agents on their playground
 
-- **Off means off.** While Keywright is locked, nothing can click, type or screenshot through it,
-  and a call already running stops within about 0.1 s.
-- **On needs you.** Unlocking, approving an agent, copying the token and loosening the
-  auto-lock all ask for Touch ID or your login password, which an agent can't fake.
-- **Your terminal stays powerless.** A built-in check tells you if a terminal still holds any of
-  those permissions, so an agent there can't skip the lock.
+Keywright moves those permissions out of the terminal and into **one signed menu-bar app with a
+lock**. Agents ask it, over MCP, to click, type or look; it does the job and hands back the result.
+Your terminal holds nothing.
+
+```mermaid
+flowchart LR
+    A["🤖 Claude Code · Codex<br>Cursor · Windsurf · …"] -- "MCP request" --> K{{"🔑 Keywright<br>unlocked with Touch ID"}}
+    K -- "click · type · screenshot" --> M["🖥️ your Mac"]
+    K -. "result" .-> A
+    T["⌨️ Terminal / IDE<br>no permissions"] -. "can't touch the screen" .-x M
+```
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+### 🔒 Off means off
+
+While Keywright is locked, nothing can click, type or screenshot through it. A call that is
+already running stops within about 0.1 s, and its result is thrown away.
+
+</td>
+<td width="33%" valign="top">
+
+### 👆 On needs you
+
+Unlocking, approving each new agent, copying the token and loosening the auto-lock all ask for
+Touch ID or your password, which an agent can't fake.
+
+</td>
+<td width="33%" valign="top">
+
+### 🧹 Your terminal stays powerless
+
+`keywright-check` tells you if a terminal still holds any of those permissions, so an agent
+there can't go around the lock.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### ⏱️ Locks itself
+
+Auto-lock after 15 idle minutes and at a hard limit after unlocking. Or lock it yourself, one
+click away in the menu bar.
+
+</td>
+<td valign="top">
+
+### 🛡️ Can't approve itself
+
+Every click and key is refused while a system security dialog is on screen, so an agent can't
+press **Allow** for itself.
+
+</td>
+<td valign="top">
+
+### 🎯 Drives like a human
+
+Real-hardware mouse, trackpad and keyboard events, screenshots, recordings, the accessibility
+tree, menus and the clipboard, plus a YAML test runner.
+
+</td>
+</tr>
+</table>
+
+## Get going in a minute
+
+```bash
+./build.sh
+open /Applications/Keywright.app
+```
+
+Unlock with Touch ID, pick **Copy Claude Code command…** in the menu, run it, and start Claude
+Code. The details are in [Quick start](#quick-start) below.
 
 ## Features
 
