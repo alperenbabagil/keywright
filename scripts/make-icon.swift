@@ -1,4 +1,4 @@
-// Renders the MacWright app icon and builds Resources/AppIcon.icns.
+// Renders the Keywright app icon and builds Resources/AppIcon.icns.
 // Usage: swift scripts/make-icon.swift   (from the repo root; needs sips + iconutil)
 import AppKit
 import CoreGraphics
@@ -15,7 +15,7 @@ func color(_ hex: UInt32, _ a: Double = 1) -> CGColor {
 let space = CGColorSpace(name: CGColorSpace.sRGB)!
 let ctx = CGContext(data: nil, width: Int(size), height: Int(size), bitsPerComponent: 8, bytesPerRow: 0,
                     space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-// Work in top-left, y-down coordinates like the rest of MacWright.
+// Work in top-left, y-down coordinates like the rest of Keywright.
 ctx.translateBy(x: 0, y: size)
 ctx.scaleBy(x: 1, y: -1)
 

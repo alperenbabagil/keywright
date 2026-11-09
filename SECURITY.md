@@ -1,6 +1,6 @@
 # Security
 
-MacWright can move the mouse, type, read the screen and press buttons in any app, using
+Keywright can move the mouse, type, read the screen and press buttons in any app, using
 permissions you grant it. Its safeguards:
 
 - The MCP server listens on `127.0.0.1` only.
@@ -13,7 +13,7 @@ permissions you grant it. Its safeguards:
 - The app is signed with the hardened runtime, so no other process can inject code into it
   (`DYLD_INSERT_LIBRARIES`) or attach a debugger and use its permissions.
 - Settings that affect safety (auto-lock limits, `refuseKeysTo`, `humanQuietMs`, the port) are
-  read at launch only, so `defaults write` while MacWright runs changes nothing.
+  read at launch only, so `defaults write` while Keywright runs changes nothing.
 - The app starts locked. The server doesn't listen until a human unlocks it with Touch ID or the
   Mac login password, so a process that can launch the app gains nothing.
 - **Lock** stops the server and every tool call, including one already running; a result that
@@ -37,24 +37,24 @@ Input Monitoring: an agent runs with its terminal's permissions and can use them
 the terminal check (menu: **Copy terminal check command**) in each terminal you use with agents.
 
 Anyone holding the token while the app is unlocked can control the Mac as you. Treat the token
-like a password (with `macwright-run`, pass it in `MACWRIGHT_TOKEN`, not `--token`, which `ps`
-shows), and lock or quit MacWright when you're not testing.
+like a password (with `keywright-run`, pass it in `KEYWRIGHT_TOKEN`, not `--token`, which `ps`
+shows), and lock or quit Keywright when you're not testing.
 
 Anything can launch the app, and launching it shows the unlock prompt. A Touch ID prompt you didn't
-expect may be an agent relaunching MacWright; only approve it when you meant to start a session.
+expect may be an agent relaunching Keywright; only approve it when you meant to start a session.
 
 ## If you build it yourself
 
-Your signing key decides who can change MacWright without losing its permissions. macOS ties
+Your signing key decides who can change Keywright without losing its permissions. macOS ties
 Accessibility and Screen Recording to the app's signature, so anyone who can re-sign a modified
-MacWright with your key keeps them. If your Developer ID key's keychain entry lets `codesign` use
+Keywright with your key keeps them. If your Developer ID key's keychain entry lets `codesign` use
 it without asking ("Always Allow"), any process running as you can do that. Remove that
 permission in Keychain Access (the key → Get Info → Access Control) so every signing asks.
 
 Keep the installed app owned by root, so changing it needs an administrator password:
 
 ```bash
-sudo chown -R root:wheel /Applications/MacWright.app
+sudo chown -R root:wheel /Applications/Keywright.app
 ```
 
 `build.sh` then needs `sudo` to install; or build somewhere else and copy it with `sudo`.

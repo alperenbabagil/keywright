@@ -1,81 +1,144 @@
-# MacWright
+# Keywright
 
-A menu-bar app that drives your Mac (mouse, keyboard, screen, accessibility, clipboard) for
-end-to-end tests of desktop apps. It hosts an MCP server so an agent such as Claude Code can use
-it. Input is posted the way physical hardware posts it (deltas, modifier presses, force-click
-pressure), and every call can report what event taps actually received.
+**Let AI agents drive your Mac, but only while you say so.**
 
-There is no other way in: every request needs the token, and launching the app (with any
-arguments) only starts the menu-bar server, so another agent or process can't borrow MacWright's
-permissions. See [SECURITY.md](SECURITY.md).
+Keywright is a menu-bar app that gives an agent such as Claude Code the mouse, keyboard, screen,
+accessibility tree and clipboard of your Mac through an MCP server. It is the only app that holds
+the permissions to do that, it starts locked, and it opens only with your fingerprint or password.
 
-macOS gives the permissions to **MacWright.app**, not to your terminal. That only works if
-LaunchServices starts it (`open` or a login item), never a shell
-running the binary directly.
+## The problem
+
+To let an agent click, type or take screenshots, macOS has to grant Accessibility and Screen
+Recording to *some* app. Most Mac-control tools tell you to grant them to your terminal or IDE.
+From then on, every process started from that terminal has them: the agent, every command it
+runs, every script an `npm install` pulls in. Any of them can watch your screen and type into any
+app, at any time, and there is no switch to turn that off short of digging through System Settings.
+
+Keywright moves those permissions out of the terminal and into one signed app with a lock:
+
+- **Off means off.** While Keywright is locked, nothing can click, type or screenshot through it,
+  and a call already running stops within about 0.1 s.
+- **On needs you.** Unlocking, approving an agent, copying the token and loosening the
+  auto-lock all ask for Touch ID or your login password, which an agent can't fake.
+- **Your terminal stays powerless.** A built-in check tells you if a terminal still holds any of
+  those permissions, so an agent there can't skip the lock.
+
+## Features
+
+**Security**
+
+- Starts locked. The MCP server doesn't even listen until you unlock it with Touch ID or your password.
+- Approve each agent: every new connection names the program behind it ("claude (pid 4242) in
+  Terminal") and waits for your Touch ID. A stolen token or session ID gets 403.
+- Auto-lock after a stretch of no tool calls (default 15 min) and at a hard limit after unlocking
+  (default 4 h). Making the limits longer needs Touch ID.
+- Lock or Quit stops a running call within about 0.1 s. Pause (or the global hotkey **⌃⌥⌘⎋**)
+  refuses new calls and releases every held key and button.
+- Refuses all input while a system security dialog is on screen, so an agent can't approve a
+  permission prompt for itself.
+- The token lives in the Keychain, is never shown, and a copied token clears from the clipboard after 60 s.
+- Hardened runtime, so no other process can inject code into the app that holds the permissions.
+- `keywright-check` tells you whether a terminal still holds permissions it shouldn't.
+- Every tool call is listed in the menu and logged.
+
+**Control**
+
+- Mouse, trackpad and keyboard input posted the way real hardware posts it: deltas, separate
+  modifier presses, force-click pressure, layout-aware key events.
+- Screenshots of any display, window or area, and screen recordings (macOS 15+).
+- The accessibility tree: find, press, set values and focus without guessing coordinates.
+- Apps, windows, menus, menu-bar items, Chrome profiles and the clipboard.
+- Knows when *you* touch the mouse or keyboard, and can refuse to act while you are using the Mac.
+
+**Testing**
+
+- `keywright-run` runs end-to-end tests of desktop apps from YAML files, with retries,
+  expectations, JUnit output and screenshots on failure.
+- Every input call can report which event taps actually received its events, and the focus
+  timeline catches windows that lose and regain focus.
+
+## What it doesn't protect
+
+Keywright guards the screen and input. An agent running as you can still read your files, run
+commands and use the network; use your agent's own sandbox and permission settings for that.
+See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ## Requirements
 
 - macOS 14 or later (`record` needs macOS 15).
 - Swift 6.1 or later (Xcode 16.3+) to build.
-- Accessibility, Screen Recording and Input Monitoring permissions, granted from the menu.
+- A Mac with Touch ID, or your login password as the fallback.
+
+## Quick start
+
+```bash
+./build.sh
+open /Applications/Keywright.app
+```
+
+1. Unlock with Touch ID or your password, and grant Accessibility, Screen Recording and Input
+   Monitoring from the menu.
+2. In each terminal where you run agents, run the check (menu → **Copy terminal check command**)
+   and turn off anything it finds.
+3. Pick **Copy Claude Code command…** in the menu (Touch ID) and run it in your terminal.
+4. Start Claude Code. When it connects, Keywright asks you to approve it with Touch ID.
+5. Ask the agent to call `status`, then `selftest` to check that posted input arrives.
 
 ## Build
 
 ```bash
-./build.sh       # swift build -c release → /Applications/MacWright.app, signed
-./build-dmg.sh   # signed app packed into dist/MacWright-<version>.dmg (drag to Applications)
+./build.sh       # swift build -c release → /Applications/Keywright.app, signed
+./build-dmg.sh   # signed app packed into dist/Keywright-<version>.dmg (drag to Applications)
 swift test       # unit tests (key names, clamp model, push_edge plans, HTTP auth)
 swift scripts/make-icon.swift   # re-render Resources/AppIcon.icns (drawn in code)
 ```
 
-macOS ties the permission grants to the bundle id (`com.kuarasoft.macwright`) and the signing
+macOS ties the permission grants to the bundle id (`com.kuarasoft.keywright`) and the signing
 identity. Sign every build with the same identity, or you'll have to grant the permissions again
-after each rebuild. Set `MACWRIGHT_SIGN_IDENTITY` to a certificate name or SHA-1 from
+after each rebuild. Set `KEYWRIGHT_SIGN_IDENTITY` to a certificate name or SHA-1 from
 `security find-identity -v -p codesigning`, or keep it in a git-ignored `.signing` file:
 
 ```bash
-echo 'MACWRIGHT_SIGN_IDENTITY=<sha1-or-name>' > .signing
+echo 'KEYWRIGHT_SIGN_IDENTITY=<sha1-or-name>' > .signing
 ```
 
-Without one, the build is signed ad hoc. After a rebuild, quit and reopen the app.
+Without one, the build is signed ad hoc. After a rebuild, quit and reopen the app. If you build it
+yourself, read **If you build it yourself** in [SECURITY.md](SECURITY.md).
 
-## Quick start
+macOS gives the permissions to **Keywright.app**, not to your terminal. That only works if
+LaunchServices starts it (`open` or a login item), never a shell running the binary directly.
 
-1. `./build.sh`, then `open /Applications/MacWright.app`.
-2. Unlock with Touch ID or your password, and grant the three permissions from the menu.
-3. Pick **Copy Claude Code command…** in the menu (Touch ID) and run it in your terminal.
-4. Start Claude Code. When it connects, MacWright asks you to approve it with Touch ID.
-5. Ask the agent to call `status`, then `selftest` to check that posted input arrives.
+## How the lock works
 
-## Menu-bar app + MCP server
-
-```bash
-open /Applications/MacWright.app
-```
-
-MacWright starts **locked**: the MCP server doesn't listen until you unlock it with Touch ID or
+Keywright starts **locked**: the MCP server doesn't listen until you unlock it with Touch ID or
 your Mac login password (macOS asks right after launch; if you cancel, use **Unlock…** in the
-menu). Anything can launch the app (`open`, a script, an agent, a login item), so launching it
-gives nothing away; only a human at the Mac can switch the server on. **Lock** in the menu stops
-the server again. While locked, Claude Code sessions just can't connect to `macwright`.
+menu). Anything can launch the app (`open`, a script, an agent, a login item), and launching it
+with any arguments only starts the menu-bar server, so launching gives nothing away; only a human
+at the Mac can switch the server on. **Lock** in the menu stops the server again. While locked,
+Claude Code sessions just can't connect to `keywright`.
 
 Lock (and Quit) also stops a tool call that is already running: typing, a drag, a wait, a `when`
 trigger or a screen recording stops within about 0.1 s, a recording cut short is deleted, and a
 result that finishes after the lock is thrown away, so no screenshot or AX tree leaves once
 you've locked. `watch_focus` stops too.
 
+Because anything can launch Keywright, a Touch ID prompt you didn't expect may come from an agent
+relaunching it. Only approve it when you meant to start a session.
+
 ### Connection approval
 
 The token alone isn't enough: Claude Code keeps it in plain text in `~/.claude.json`, where any
-process running as you could read it. So every new MCP session waits for you. MacWright finds the
+process running as you could read it. So every new MCP session waits for you. Keywright finds the
 process on the other end of the connection and asks, with Touch ID or your password, "let claude
-(pid 4242) in Terminalo control this Mac through MacWright", with the program's full path. Refuse,
+(pid 4242) in Terminal control this Mac through Keywright", with the program's full path. Refuse,
 and the client gets 403. An approved process isn't asked again until you lock; Lock forgets every
 approval. A session only answers the process it was approved for, so another program that learns
-its session ID gets 403 too, and a process MacWright can't identify is refused without asking.
-Each `macwright-run` is a new process, so each run asks once.
+its session ID gets 403 too, and a process Keywright can't identify is refused without asking.
+Each `keywright-run` is a new process, so each run asks once.
 
-**Auto-lock** (menu → Auto-lock) locks MacWright by itself, whichever comes first:
+### Auto-lock
+
+**Auto-lock** (menu → Auto-lock) locks Keywright by itself, whichever comes first:
 
 - **When idle:** after a stretch with no tool calls (default 15 min; never, 5, 15, 30, 60 or 120 min). A call that is still running counts as activity.
 - **At most:** a fixed time after you unlock, even in the middle of a call (default 4 h; no limit, 1, 2, 4, 8 or 12 h).
@@ -83,14 +146,13 @@ Each `macwright-run` is a new process, so each run asks once.
 The menu shows the time left ("Ready · locks in 12 min") and, after an automatic lock, why it
 locked. Making a limit stricter applies at once; making it longer or turning it off asks for
 Touch ID, so an agent clicking the menu can't extend its own session. The limits are read at
-launch only (editing the defaults while MacWright runs changes nothing) and the unlock prompt
+launch only (editing the defaults while Keywright runs changes nothing) and the unlock prompt
 names them.
 
 The server also drops a client that hasn't sent its headers within 10 s, or its whole request
 within 30 s. A long tool call's reply isn't affected.
 
-Because anything can launch MacWright, a Touch ID prompt you didn't expect may come from an agent
-relaunching it. Only approve it when you meant to start a session.
+### Security dialogs
 
 While a security dialog is on screen (a permission prompt, a password or Touch ID sheet,
 Gatekeeper, the screen-sharing picker), every click, key, scroll and AX action fails with
@@ -100,32 +162,32 @@ the lock. There is no override; answer the dialog yourself.
 
 ### Check your terminal
 
-The lock only protects you if MacWright is the only app with Accessibility, Screen Recording and
+The lock only protects you if Keywright is the only app with Accessibility, Screen Recording and
 Input Monitoring. A command-line agent runs with its terminal's permissions, so if the terminal
 holds any of them, the agent can click, type or take screenshots (`osascript`, `screencapture`)
-without MacWright, locked or not. In the menu, **Copy terminal check command**, then paste it in
+without Keywright, locked or not. In the menu, **Copy terminal check command**, then paste it in
 each terminal or app where you run agents:
 
 ```text
-Checking Terminalo  /Applications/Terminalo.app
+Checking Terminal  /System/Applications/Utilities/Terminal.app
   ✓ Accessibility: not granted
   ✓ Screen Recording: not granted
   ✓ Input Monitoring: not granted
 
-OK. Agents running in Terminalo can only control this Mac through MacWright, so its lock applies to them.
+OK. Agents running in Terminal can only control this Mac through Keywright, so its lock applies to them.
 ```
 
 If one is granted, it says what an agent there could do and prints commands that open the right
 System Settings panes; turn that app off there. It only reads the current state, never asks for a
 permission, and exits 1 when it finds one (`--json` for scripts). macOS doesn't let one app read
-another's grants without Full Disk Access, which MacWright shouldn't have, so the check has to run
+another's grants without Full Disk Access, which Keywright shouldn't have, so the check has to run
 inside the app being checked.
 
-The menu shows:
+## The menu
 
 - Server address: Streamable HTTP at `http://127.0.0.1:47615/mcp`. It listens on 127.0.0.1
-  only; change the port with `defaults write com.kuarasoft.macwright port -int <port>` and
-  restart MacWright (settings are read at launch only).
+  only; change the port with `defaults write com.kuarasoft.keywright port -int <port>` and
+  restart Keywright (settings are read at launch only).
 - Permissions: Accessibility, Screen Recording and Input Monitoring. Click one to get the
   system prompt (if it isn't granted yet) and the matching System Settings pane.
   **Copy terminal check command** is there too (see Check your terminal).
@@ -133,21 +195,23 @@ The menu shows:
 - **Copy Claude Code command…** (Touch ID), which copies:
 
 ```bash
-claude mcp add --transport http macwright http://127.0.0.1:47615/mcp --header "Authorization: Bearer <token>"
+claude mcp add --transport http keywright http://127.0.0.1:47615/mcp --header "Authorization: Bearer <token>"
 ```
 
 - Token: copies or regenerates the token, each after Touch ID. The menu never shows it, and a
   copied token (or Claude Code command) is cleared from the clipboard after 60 s. The token is
-  created on first run and kept in the login Keychain (service `com.kuarasoft.macwright`).
+  created on first run and kept in the login Keychain (service `com.kuarasoft.keywright`).
   Every request needs `Authorization: Bearer <token>`. After you regenerate it, run
-  `claude mcp remove macwright` and add the server again.
+  `claude mcp remove keywright` and add the server again.
 - **Pause** (or the global hotkey **⌃⌥⌘⎋**): while paused, tool calls fail with `paused`.
   Pausing, quitting and any failed tool call release every held button and key.
 - Recent tool calls, with time, result and duration. The log is in
-  `~/Library/Logs/MacWright/macwright.log`.
+  `~/Library/Logs/Keywright/keywright.log`.
 - Launch at login (SMAppService) and Quit.
 
-A dot on the menu-bar icon means a tool call is running. A pause symbol means MacWright is paused.
+A dot on the menu-bar icon means a tool call is running. A pause symbol means Keywright is paused.
+
+## Reference
 
 ### Coordinates
 
@@ -190,7 +254,7 @@ action. Calls run one at a time.
 | Focus | `watch_focus {action: start\|read\|stop, apps?, since?, bounceMs?}` (frontmost-app and key/main-window timeline, with bounces) |
 | Events | `record_events {seconds, types?, taps?}` (full dump of HID + session taps to a JSON file), `watch_events {seconds, tap?, types?}` |
 | Mouse | `warp {x,y}`, `move {dx,dy,steps,intervalMs,modifiers?}`, `drag {dx,dy,steps,intervalMs,button?,modifiers?}` or `drag {toEdge,display?,dwellMs?,pushSteps?,holdMs?,release?}` (a file drag onto an edge), `move_to {x,y,durationMs,modifiers?}`, `push_edge {edge,display?,along,distance,steps,intervalMs,dwellMs?,modifiers?}` (modifiers held through the whole gesture, e.g. ⌘ or fn), `click {button,count,x?,y?,modifiers?}`, `down/up {button}`, `force_click {x?,y?}`, `scroll {dx,dy,unit,phases}` |
-| Keyboard | `key {key,modifiers?,holdMs?,layoutText?}` (events carry the current layout's text, like hardware), `type_text {text,intervalMs?}`, `hold {keys,modifiers,ms}`, `chord {hold, steps}` (modifiers held through several steps, e.g. ⌘ through a jump + Tab), `release_all`. Key tools take `keyTarget` and refuse while a terminal that may host the agent is active (`allowActive`, `refuseIfActive`, `defaults write com.kuarasoft.macwright refuseKeysTo -array …`, read at launch) |
+| Keyboard | `key {key,modifiers?,holdMs?,layoutText?}` (events carry the current layout's text, like hardware), `type_text {text,intervalMs?}`, `hold {keys,modifiers,ms}`, `chord {hold, steps}` (modifiers held through several steps, e.g. ⌘ through a jump + Tab), `release_all`. Key tools take `keyTarget` and refuse while a terminal that may host the agent is active (`allowActive`, `refuseIfActive`, `defaults write com.kuarasoft.keywright refuseKeysTo -array …`, read at launch) |
 | Screen | `screenshot {display?,rect?,window?,scale=0.5,format}`, `wait_screen_stable`, `wait_for_screen_change`, `record {seconds,display?,path}` (macOS 15+) |
 | Windows/apps | `list_windows {app?}` (flags `systemPrompt` windows, such as TCC alerts, Gatekeeper, SecurityAgent, UserNotificationCenter and a showing notification banner, and lists them under `systemPrompts`), `launch_app`, `quit_app`, `activate_app`, `running_apps`, `open_url`, `open_file` |
 | Chrome | `chrome_profiles {channel?}` (directory, name, signed-in email), `open_chrome {urls?, profile?, newWindow?, incognito?, guest?, appUrl?, channel?, userDataDir?, remoteDebuggingPort?, args?}` (works whether Chrome is running or not; `profile` takes a directory, display name or email; returns the new window ids) |
@@ -202,22 +266,22 @@ Notes:
 
 - Every input tool's result has `posted`: the event types, flags and count it sent. Add
   `watch: true` (or `"hid"` / `"both"`) to get `observed`, the events a tap actually saw during the
-  call. The taps are read after a *fence*: one more marked zero-delta move that MacWright posts
+  call. The taps are read after a *fence*: one more marked zero-delta move that Keywright posts
   after the action and waits for at every tap (taps see events in posting order). So slow delivery
   is waited for instead of being reported as nothing seen; `observed.complete: false` (with
-  `fence.missing`) means a tap never received MacWright's events at all. Add `swallow: true` to drop MacWright's own events at the head of the HID stream after
+  `fence.missing`) means a tap never received Keywright's events at all. Add `swallow: true` to drop Keywright's own events at the head of the HID stream after
   recording them. That checks delivery at the HID level without any app receiving them.
   While another app's head tap consumes events (e.g. an app that has captured the mouse), a plain watch can't
   see them; `swallow` can.
 - Every posted event carries `kCGEventSourceUserData = 0x4D435752` ('MCWR'), so recordings mark
   it `synthetic`. Tap probes and fences carry 'MCWP' and 'MCWF'<<16|seq and are hidden from results.
-- **Human input.** An always-on listen-only HID tap counts every event MacWright did not post (the
+- **Human input.** An always-on listen-only HID tap counts every event Keywright did not post (the
   human's mouse, trackpad touches, keys, scrolls, or another app's events). It keeps counts, kinds
   and times only, never key codes. Every tool result has `humanInput`: `sinceLastCall` (since the
   previous call ended), `duringCall`, `kinds`, `lastAtMillis`, `msAgo`, `lastKind`, and
   `otherProcesses` when another app posted events. `status` has the totals. Input tools take
   `humanQuietMs`: the call fails without posting anything when human input arrived within that many
-  ms (default 0, or `defaults write com.kuarasoft.macwright humanQuietMs -int 500`, read at launch).
+  ms (default 0, or `defaults write com.kuarasoft.keywright humanQuietMs -int 500`, read at launch).
 - **Focus timeline.** `watch_focus {action: "start"}` records `appActivated`/`appDeactivated`
   (NSWorkspace) and `focusedWindowChanged`/`mainWindowChanged` (AX observers on the frontmost app,
   every app that becomes frontmost, and `apps`), each with `t` (ms since start), pid, bundle id and
@@ -258,14 +322,14 @@ Notes:
 
 ## Test runner
 
-`macwright-run` runs end-to-end tests written as YAML (or JSON) files, without an agent. It talks
+`keywright-run` runs end-to-end tests written as YAML (or JSON) files, without an agent. It talks
 to the running, unlocked app over MCP with the token, so it has no permissions of its own and
-works the same on your Mac and on a CI machine with MacWright set up.
+works the same on your Mac and on a CI machine with Keywright set up.
 
 ```bash
-swift build -c release --product macwright-run
-export MACWRIGHT_TOKEN=<token>   # menu: Token → Copy token… (prefer this to --token, which other processes can see in ps)
-.build/release/macwright-run examples/
+swift build -c release --product keywright-run
+export KEYWRIGHT_TOKEN=<token>   # menu: Token → Copy token… (prefer this to --token, which other processes can see in ps)
+.build/release/keywright-run examples/
 ```
 
 A test file has optional `setup`, the `steps`, and optional `teardown`. Each step calls one tool
@@ -310,8 +374,8 @@ runner usually is). Bring the app forward first and pass `keyTarget`, as in the 
 
 | Option | |
 |---|---|
-| `--token <token>` | Bearer token (default `$MACWRIGHT_TOKEN`). Any process can read command-line arguments with `ps`, so prefer the variable |
-| `--server <url>` | MCP endpoint (default `$MACWRIGHT_SERVER`, or 127.0.0.1 on the app's port) |
+| `--token <token>` | Bearer token (default `$KEYWRIGHT_TOKEN`). Any process can read command-line arguments with `ps`, so prefer the variable |
+| `--server <url>` | MCP endpoint (default `$KEYWRIGHT_SERVER`, or 127.0.0.1 on the app's port) |
 | `--var name=value` | Set or override a variable |
 | `--junit <path>` | Write a JUnit XML report for CI |
 | `--artifacts <dir>` | Save a screenshot when a test fails |
