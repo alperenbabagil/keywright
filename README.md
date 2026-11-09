@@ -17,9 +17,7 @@ but only after your fingerprint opens the gate, and never once you lock it.
 
 [![Download for macOS](https://img.shields.io/badge/Download-Keywright%20for%20macOS-3b5bdb?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/alperenbabagil/keywright/releases/latest)
 
-<a href="docs/media/keywright.mp4"><img src="docs/media/keywright-poster.jpg" width="820" alt="Watch the 51-second film: an agent's shell turns a Mac into a monster, then Keywright keeps agents on their playground"></a>
-
-<sub>▶ Click to watch the 51-second film</sub>
+https://github.com/user-attachments/assets/899ed76a-af59-4629-8294-cbfcddd798b4
 
 </div>
 
