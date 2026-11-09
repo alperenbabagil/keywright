@@ -15,9 +15,11 @@ but only after your fingerprint opens the gate, and never once you lock it.
 ![Touch ID](https://img.shields.io/badge/unlock-Touch%20ID-2f9e44)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
-<a href="docs/media/keywright.mp4"><img src="docs/media/keywright-poster.jpg" width="820" alt="Watch the 49-second film: an agent's shell turns a Mac into a monster, then Keywright keeps agents on their playground"></a>
+[![Download for macOS](https://img.shields.io/badge/Download-Keywright%20for%20macOS-3b5bdb?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/alperenbabagil/keywright/releases/latest)
 
-<sub>▶ Click to watch the 49-second film</sub>
+<a href="docs/media/keywright.mp4"><img src="docs/media/keywright-poster.jpg" width="820" alt="Watch the 51-second film: an agent's shell turns a Mac into a monster, then Keywright keeps agents on their playground"></a>
+
+<sub>▶ Click to watch the 51-second film</sub>
 
 </div>
 
@@ -102,6 +104,12 @@ tree, menus and the clipboard, plus a YAML test runner.
 </table>
 
 ## Get going in a minute
+
+1. Download **Keywright.dmg** from the [latest release](https://github.com/alperenbabagil/keywright/releases/latest).
+   It's signed and notarized by Apple.
+2. Open it and drag **Keywright** to **Applications**, then open it from there.
+
+Or build it yourself:
 
 ```bash
 ./build.sh
