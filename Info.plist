@@ -12,5 +12,7 @@
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>Keywright records from a microphone or other audio input only when an agent you approved asks it to (record_audio) while Keywright is unlocked. The recording is saved as a file on this Mac and never sent anywhere. Locking Keywright stops it and deletes the file.</string>
+    <key>NSCameraUsageDescription</key><string>Keywright takes a still from a camera (including a Continuity Camera iPhone) only when an agent you approved asks it to (capture_camera_frame) while Keywright is unlocked. The picture is saved as a file on this Mac and given to that agent, never sent anywhere else.</string>
 </dict>
 </plist>

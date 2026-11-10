@@ -51,7 +51,7 @@ private let appSchema = S.str("App bundle id (or running app name / pid)")
 enum Tools {
     static let queue = DispatchQueue(label: "keywright.tools", qos: .userInitiated)
 
-    static let all: [ToolDef] = info + mouse + keyboard + events + screen + windows + accessibility + clipboard + waiting
+    static let all: [ToolDef] = info + mouse + keyboard + events + screen + media + windows + accessibility + clipboard + waiting
 
     /// Tools that post input: their results say what was posted, and they accept `watch` and
     /// `humanQuietMs`.
@@ -356,6 +356,45 @@ enum Tools {
                 schema: S.object(["seconds": S.num("Duration"), "display": S.int("Display id (default main)"),
                                   "path": S.str("Output .mov path")], required: ["seconds", "path"])) { a in
             ToolOutput(try Screen.record(seconds: try a.req("seconds"), displayID: try a.int("display"), path: try a.reqString("path")))
+        },
+    ]
+
+    // MARK: Microphone and camera
+
+    static let media: [ToolDef] = [
+        ToolDef(name: "list_media_devices", description: "Audio inputs and cameras: id, name, modelID, manufacturer, mediaTypes (audio/video/muxed), transport (builtIn, usb, bluetooth, continuity, virtual…), builtIn, deskView (macOS's top-down crop of a camera; picked only when named), iPhone (a Continuity Camera iPhone: its camera is \"<name> Camera\", its microphone \"<name> Microphone\", modelID like iPhone12,1), connected, suspended (a closed lid), inUseByAnotherApp. Also the system defaults and Keywright's microphone and camera permission (granted, notAsked, denied, restricted). Lists only; asks for no permission.",
+                schema: S.object([:])) { _ in
+            ToolOutput(MediaDevices.list())
+        },
+        ToolDef(name: "record_audio", description: "Record sound from an audio input to an .m4a (Microphone permission, held by Keywright). Two shapes: {seconds} records and returns when done (max 600); {action: start} returns at once with an id while it keeps recording (so you can play a sound, tap a phone or speak), then {action: stop, id} finishes it (it stops by itself after maxSeconds, default 600; {action: list} shows running ones). The result has path, bytes, durationSeconds, peakDb/rmsDb (dBFS), digitalSilence and loud: the stretches at or above loudDb (default -35 dBFS) as {start, end, peakDb} in seconds from the start. A room microphone never reads as silence; expect -60 to -45 dBFS of background. Locking or pausing Keywright stops a recording and deletes the file. If macOS has never asked, the first call shows its permission prompt and fails with \"waiting for permission\": the person at the Mac answers it, never you.",
+                schema: S.object(["action": S.enum(["record", "start", "stop", "list"], "Default record (needs seconds)"),
+                                  "seconds": S.num("record: how long (max 600)"),
+                                  "maxSeconds": S.num("start: stop by itself after this long (default 600, max 3600)"),
+                                  "id": S.str("stop: which recording (default: the only one running)"),
+                                  "device": S.str("Device id or name from list_media_devices, \"mac-mic\" (the Mac's own), \"iphone:<name>\" (a Continuity Camera iPhone's microphone), or a unique part of a name. Default: the system default input"),
+                                  "path": S.str("Output .m4a (default ~/Library/Caches/Keywright/media/audio-<ms>.m4a)"),
+                                  "loudDb": S.num("Level in dBFS that counts as loud in the result (default -35)")])) { a in
+            let req = try AudioRecordRequest.parse(action: try a.string("action"), seconds: try a.double("seconds"),
+                                                   maxSeconds: try a.double("maxSeconds"), id: try a.string("id"))
+            return ToolOutput(try AudioRecorder.run(req, device: try a.string("device"), path: try a.string("path"),
+                                                    loudDb: try a.double("loudDb", -35)))
+        },
+        ToolDef(name: "capture_camera_frame", description: "One still from a camera (Camera permission, held by Keywright): the Mac's camera, a USB webcam, or a Continuity Camera iPhone, e.g. a second iPhone on a stand pointed at a test phone's screen. Waits warmupMs after the first frame so exposure settles. Returns the image, the saved path, its pixel size and the device. If macOS has never asked, the first call shows its permission prompt and fails with \"waiting for permission\": the person at the Mac answers it, never you.",
+                schema: S.object(["device": S.str("Device id or name from list_media_devices, \"mac-camera\", \"iphone:<name>\" (its Continuity Camera), or a unique part of a name. Default: the system default camera"),
+                                  "path": S.str("Save here (.jpg, .jpeg or .png; default ~/Library/Caches/Keywright/media/camera-<ms>.jpg)"),
+                                  "warmupMs": S.num("Frames to skip after the camera starts, in ms (default 1000)"),
+                                  "timeoutMs": S.num("Give up if no usable frame by then (default 10000)"),
+                                  "inline": S.bool("Return the image in the result (default true)")])) { a in
+            let url = try AudioRecorder.outputURL(try a.string("path"), prefix: "camera", ext: ["jpg", "jpeg", "png"])
+            let jpeg = url.pathExtension.lowercased() != "png"
+            let (img, dev, frames) = try Camera.captureFrame(device: try a.string("device"), warmupMs: try a.double("warmupMs", 1000),
+                                                             timeoutMs: try a.double("timeoutMs", 10000))
+            let data = try Screen.encode(img, jpeg: jpeg)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url)
+            return ToolOutput(["path": url.path, "bytes": data.count, "width": img.width, "height": img.height,
+                               "device": dev.name, "deviceId": dev.id, "framesSeen": frames],
+                              image: try a.bool("inline", true) ? (data.base64EncodedString(), jpeg ? "image/jpeg" : "image/png") : nil)
         },
     ]
 
@@ -699,6 +738,7 @@ enum Tools {
         Every result carries humanInput: input Keywright did not post (the human's mouse, trackpad, keys, scrolls, or another app's events) — sinceLastCall, duringCall, kinds, msAgo. If it is non-zero around a step, the human may have interfered: re-check the screen before trusting the step. Input tools take humanQuietMs to refuse while the human is active.
         watch: true on an input tool returns observed (what a tap saw), read after a fence event so slow delivery is waited for; observed.complete=false means a tap is not receiving Keywright's events at all.
         watch_focus start/read/stop records frontmost-app and key/main-window changes with timestamps; read returns bounces (a window losing focus and getting it back quickly).
+        list_media_devices, record_audio and capture_camera_frame use the microphone and cameras (including Continuity Camera iPhones). record_audio {action: start} keeps recording while you act; stop it with {action: stop}. A "waiting for permission" error means macOS is showing a prompt only the human may answer: ask them, then retry.
         status_items lists every app's menu-bar status items with pid, bundleId and frame; click_status_item clicks one for real (by pid when two apps share a name).
         If list_windows shows systemPrompts, stop and ask the human. A notification banner (promptKind notificationBanner) goes away by itself: wait a few seconds and list again before asking.
         Keys go to the active app (every result's activeApp). key, type_text, hold and chord refuse while a terminal that may host you is active (an Esc there cancels your own tool call); bring the target forward with activate_app or pass keyTarget. Modifiers can be held through push_edge / move / move_to / drag (modifiers) or a whole sequence (chord). drag toEdge with dwellMs does a file drag onto an edge. menu_extra method click uses real clicks (a user action). Any input tool takes when {file, regex} to act the moment a log line appears. pointer.moves=false means relative moves didn't move the cursor.

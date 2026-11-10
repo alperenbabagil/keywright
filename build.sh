@@ -30,6 +30,8 @@ cp "$BINDIR/keywright-check" "$APP/Contents/Resources/keywright-check"
 # not signed by the same team, and blocks debuggers. Without it, any process running as the user
 # could inject code into Keywright and use its permissions with no lock, token or Touch ID.
 codesign --force --options runtime --sign "$IDENTITY" "$APP/Contents/Resources/keywright-check"
-codesign --force --options runtime --sign "$IDENTITY" "$APP"
+# The hardened runtime blocks the microphone and cameras unless the app declares them
+# (Keywright.entitlements); macOS still asks the user before either is used.
+codesign --force --options runtime --entitlements Keywright.entitlements --sign "$IDENTITY" "$APP"
 codesign --verify --strict "$APP"
 echo "Built $APP"

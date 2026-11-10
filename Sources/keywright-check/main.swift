@@ -1,9 +1,10 @@
 // keywright-check: run it in a terminal (or any app that hosts agents) to see whether that app
-// itself holds Accessibility, Screen Recording or Input Monitoring. macOS charges a command-line
+// itself holds Accessibility, Screen Recording, Input Monitoring, Microphone or Camera. macOS charges a command-line
 // program's permissions to the app it runs in, so if the terminal has them, an agent there can
 // click, type and take screenshots without Keywright — and Keywright's lock can't stop it.
 // Nothing here asks for a permission or shows a prompt; it only reads the current state.
 import ApplicationServices
+import AVFoundation
 import CoreGraphics
 import Darwin
 import Foundation
@@ -67,8 +68,8 @@ if CommandLine.arguments.contains("-h") || CommandLine.arguments.contains("--hel
         Usage: keywright-check [--json]
 
         Run this in each terminal or app where you use agents. It reports whether that app holds
-        Accessibility, Screen Recording or Input Monitoring. If it does, agents there can control
-        or record the Mac without Keywright, so Keywright's lock doesn't protect you.
+        Accessibility, Screen Recording, Input Monitoring, Microphone or Camera. If it does, agents
+        there can control or record the Mac without Keywright, so Keywright's lock doesn't protect you.
         Exit status: 0 nothing found, 1 the app holds at least one of them.
         """)
     exit(0)
@@ -84,6 +85,13 @@ let checks = [
     Check(name: "Input Monitoring", granted: CGPreflightListenEventAccess() || IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted,
           risk: "can read every key you type, in any app",
           pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"),
+    // authorizationStatus only reads the state; it never shows a prompt.
+    Check(name: "Microphone", granted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+          risk: "can record sound from the microphone (for example with ffmpeg or sox)",
+          pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"),
+    Check(name: "Camera", granted: AVCaptureDevice.authorizationStatus(for: .video) == .authorized,
+          risk: "can take pictures and video with the camera (for example with ffmpeg or imagesnap)",
+          pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"),
 ]
 let host = hostApp()
 let hostName = host?.name ?? "this program's host"

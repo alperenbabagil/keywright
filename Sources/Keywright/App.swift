@@ -180,6 +180,7 @@ final class AppState: ObservableObject {
         // First, so a call that is running right now stops at its next check.
         Control.shared.setLocked(true)
         _ = FocusWatch.shared.stop()
+        AudioRecorder.discardAll(reason: "locked")
         Driver.shared.releaseAll()
         host?.stop()
         host = nil
@@ -267,6 +268,7 @@ final class AppState: ObservableObject {
 
     func stop() {
         Control.shared.setLocked(true)
+        AudioRecorder.discardAll(reason: "quit")
         Driver.shared.releaseAll()
         host?.stop()
     }

@@ -140,6 +140,8 @@ Code. The details are in [Quick start](#quick-start) below.
 - Mouse, trackpad and keyboard input posted the way real hardware posts it: deltas, separate
   modifier presses, force-click pressure, layout-aware key events.
 - Screenshots of any display, window or area, and screen recordings (macOS 15+).
+- Microphone recordings and camera stills (including a Continuity Camera iPhone), with the grant
+  held by Keywright, not your terminal.
 - The accessibility tree: find, press, set values and focus without guessing coordinates.
 - Apps, windows, menus, menu-bar items, Chrome profiles and the clipboard.
 - Knows when *you* touch the mouse or keyboard, and can refuse to act while you are using the Mac.
@@ -256,8 +258,8 @@ the lock. There is no override; answer the dialog yourself.
 
 ### Check your terminal
 
-The lock only protects you if Keywright is the only app with Accessibility, Screen Recording and
-Input Monitoring. A command-line agent runs with its terminal's permissions, so if the terminal
+The lock only protects you if Keywright is the only app with Accessibility, Screen Recording,
+Input Monitoring, Microphone and Camera. A command-line agent runs with its terminal's permissions, so if the terminal
 holds any of them, the agent can click, type or take screenshots (`osascript`, `screencapture`)
 without Keywright, locked or not. In the menu, **Copy terminal check command**, then paste it in
 each terminal or app where you run agents:
@@ -267,6 +269,8 @@ Checking Terminal  /System/Applications/Utilities/Terminal.app
   ✓ Accessibility: not granted
   ✓ Screen Recording: not granted
   ✓ Input Monitoring: not granted
+  ✓ Microphone: not granted
+  ✓ Camera: not granted
 
 OK. Agents running in Terminal can only control this Mac through Keywright, so its lock applies to them.
 ```
@@ -282,7 +286,7 @@ inside the app being checked.
 - Server address: Streamable HTTP at `http://127.0.0.1:47615/mcp`. It listens on 127.0.0.1
   only; change the port with `defaults write com.kuarasoft.keywright port -int <port>` and
   restart Keywright (settings are read at launch only).
-- Permissions: Accessibility, Screen Recording and Input Monitoring. Click one to get the
+- Permissions: Accessibility, Screen Recording, Input Monitoring, Microphone and Camera. Click one to get the
   system prompt (if it isn't granted yet) and the matching System Settings pane.
   **Copy terminal check command** is there too (see Check your terminal).
 - **Approved agents**: the programs you approved since unlocking (see Connection approval).
@@ -350,6 +354,7 @@ action. Calls run one at a time.
 | Mouse | `warp {x,y}`, `move {dx,dy,steps,intervalMs,modifiers?}`, `drag {dx,dy,steps,intervalMs,button?,modifiers?}` or `drag {toEdge,display?,dwellMs?,pushSteps?,holdMs?,release?}` (a file drag onto an edge), `move_to {x,y,durationMs,modifiers?}`, `push_edge {edge,display?,along,distance,steps,intervalMs,dwellMs?,modifiers?}` (modifiers held through the whole gesture, e.g. ⌘ or fn), `click {button,count,x?,y?,modifiers?}`, `down/up {button}`, `force_click {x?,y?}`, `scroll {dx,dy,unit,phases}` |
 | Keyboard | `key {key,modifiers?,holdMs?,layoutText?}` (events carry the current layout's text, like hardware), `type_text {text,intervalMs?}`, `hold {keys,modifiers,ms}`, `chord {hold, steps}` (modifiers held through several steps, e.g. ⌘ through a jump + Tab), `release_all`. Key tools take `keyTarget` and refuse while a terminal that may host the agent is active (`allowActive`, `refuseIfActive`, `defaults write com.kuarasoft.keywright refuseKeysTo -array …`, read at launch) |
 | Screen | `screenshot {display?,rect?,window?,scale=0.5,format}`, `wait_screen_stable`, `wait_for_screen_change`, `record {seconds,display?,path}` (macOS 15+) |
+| Media | `list_media_devices` (microphones and cameras, including Continuity Camera iPhones, with id, name, modelID and media types), `record_audio {seconds}` or `{action: start\|stop\|list, id?, maxSeconds?}` (.m4a with duration, peak/RMS and the loud stretches; `device`: an id, a name, `mac-mic` or `iphone:<name>`), `capture_camera_frame {device?, path?, warmupMs?}` (one still, e.g. from an iPhone on a stand pointed at a test phone). Microphone and Camera permission belong to Keywright; the first use shows the macOS prompt and fails with "waiting for permission" until the person at the Mac answers. Lock or Pause stops a recording and deletes the file |
 | Windows/apps | `list_windows {app?}` (flags `systemPrompt` windows, such as TCC alerts, Gatekeeper, SecurityAgent, UserNotificationCenter and a showing notification banner, and lists them under `systemPrompts`), `launch_app`, `quit_app`, `activate_app`, `running_apps`, `open_url`, `open_file` |
 | Chrome | `chrome_profiles {channel?}` (directory, name, signed-in email), `open_chrome {urls?, profile?, newWindow?, incognito?, guest?, appUrl?, channel?, userDataDir?, remoteDebuggingPort?, args?}` (works whether Chrome is running or not; `profile` takes a directory, display name or email; returns the new window ids) |
 | Accessibility | `ax_tree {app,window?,maxDepth=8,includeMenuBar?}`, `ax_find`, `ax_press`, `ax_set_value`, `ax_focus` (each takes `path` or `query`), `menu_extra {app,itemPath,method: press\|click}` (status-item menu, e.g. an app's tray menu; `click` = real clicks, a user action), `menu {app,itemPath}`, `status_items {app?}`, `click_status_item {pid \| app, index, method: click\|press}` |
