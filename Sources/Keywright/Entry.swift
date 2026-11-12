@@ -7,7 +7,7 @@
 // It is only ever the menu-bar app hosting the MCP server (Streamable HTTP on 127.0.0.1:47615/mcp),
 // whatever arguments it is launched with. Every request needs the Bearer token, so launching the app
 // gives another process nothing: there is no unauthenticated way to borrow Keywright's grants.
-// It also starts locked (App.swift): the server only listens after Touch ID or the login password.
+// It also starts locked (App.swift): tool calls are refused until Touch ID or the login password.
 // `open` without -n reuses a running instance, so there is one menu-bar app.
 import AppKit
 

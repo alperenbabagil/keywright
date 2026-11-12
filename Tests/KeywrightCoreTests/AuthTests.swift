@@ -73,7 +73,8 @@ final class HTTPAuthTests: XCTestCase {
             }
             // A call that takes 20 s, like a long recording, to check what stop() does to it.
             // Not cancellable, like Keywright's tools, which run on their own serial queue.
-            await s.withMethodHandler(CallTool.self) { _ in
+            await s.withMethodHandler(CallTool.self) { params in
+                if params.name == "ping_tool" { return .init(content: [.text(text: "pong", annotations: nil, _meta: nil)]) }
                 await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
                     DispatchQueue.global().asyncAfter(deadline: .now() + 20) { c.resume() }
                 }
@@ -270,6 +271,141 @@ final class HTTPAuthTests: XCTestCase {
             _ = try await post(initialize, auth: auth)
             XCTFail("connected after stop")
         } catch {}
+    }
+}
+
+/// Listening while locked: clients connect and load their tools, but every tool call is refused
+/// and nobody is asked for approval until the owner unlocks.
+final class LockedHostTests: XCTestCase {
+    static let token = "locked-token-0123456789"
+    let auth = "Bearer \(LockedHostTests.token)"
+    var host: MCPHTTPHost!
+    let asked = Box(0)
+    let allow = Box(true)
+
+    override func setUp() async throws {
+        host = MCPHTTPHost(port: 0, locked: true, token: { LockedHostTests.token }, serverFactory: {
+            let s = Server(name: "test", version: "1", capabilities: .init(tools: .init(listChanged: false)))
+            await s.withMethodHandler(ListTools.self) { _ in
+                .init(tools: [Tool(name: "ping_tool", description: "x", inputSchema: ["type": "object"])])
+            }
+            await s.withMethodHandler(CallTool.self) { _ in .init(content: [.text(text: "pong", annotations: nil, _meta: nil)]) }
+            return s
+        })
+        let asked = self.asked, allow = self.allow
+        await host.setApproveSession { _ in asked.value += 1; return allow.value }
+        try host.start()
+    }
+
+    override func tearDown() { host?.stop() }
+
+    func post(_ body: String, session: String? = nil) async throws -> (Int, HTTPURLResponse, String) {
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(host.port!)/mcp")!)
+        req.httpMethod = "POST"
+        req.httpBody = Data(body.utf8)
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+        req.setValue(auth, forHTTPHeaderField: "Authorization")
+        if let session {
+            req.setValue(session, forHTTPHeaderField: "Mcp-Session-Id")
+            req.setValue("2025-06-18", forHTTPHeaderField: "MCP-Protocol-Version")
+        }
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        let http = resp as! HTTPURLResponse
+        return (http.statusCode, http, String(data: data, encoding: .utf8) ?? "")
+    }
+
+    let initialize = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#
+    let call = #"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"ping_tool","arguments":{}}}"#
+
+    func connect() async throws -> String {
+        let (status, headers, _) = try await post(initialize)
+        XCTAssertEqual(status, 200)
+        let sid = try XCTUnwrap(headers.value(forHTTPHeaderField: "Mcp-Session-Id"))
+        _ = try await post(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#, session: sid)
+        return sid
+    }
+
+    func testLockedConnectsAndListsButRefusesCallsWithoutAsking() async throws {
+        let sid = try await connect()
+        let (ls, _, list) = try await post(#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#, session: sid)
+        XCTAssertEqual(ls, 200)
+        XCTAssertTrue(list.contains("ping_tool"), list)
+
+        let (cs, _, body) = try await post(call, session: sid)
+        XCTAssertEqual(cs, 200)
+        XCTAssertTrue(body.contains(#""isError":true"#), body)
+        XCTAssertTrue(body.contains("Keywright is locked"), body)
+        XCTAssertTrue(body.contains(#""id":7"#), body)
+        XCTAssertFalse(body.contains("pong"), body)
+        XCTAssertEqual(asked.value, 0, "nobody is asked while locked")
+
+        // A batch with a tool call is refused as a whole.
+        let (bs, _, _) = try await post("[" + call + "]", session: sid)
+        XCTAssertEqual(bs, 403)
+    }
+
+    /// Unlocking: the first call asks once, later calls don't; locking forgets it, so the next
+    /// call after the next unlock asks again.
+    func testApprovalAtFirstCallAfterUnlockAndAgainAfterLock() async throws {
+        let sid = try await connect()
+        await host.setLocked(false)
+        let (_, _, first) = try await post(call, session: sid)
+        XCTAssertTrue(first.contains("pong"), first)
+        XCTAssertEqual(asked.value, 1)
+        let (_, _, second) = try await post(call, session: sid)
+        XCTAssertTrue(second.contains("pong"), second)
+        XCTAssertEqual(asked.value, 1)
+
+        await host.setLocked(true)
+        let (_, _, locked) = try await post(call, session: sid)
+        XCTAssertTrue(locked.contains("Keywright is locked"), locked)
+        XCTAssertEqual(asked.value, 1)
+
+        await host.setLocked(false)
+        let (_, _, again) = try await post(call, session: sid)
+        XCTAssertTrue(again.contains("pong"), again)
+        XCTAssertEqual(asked.value, 2, "the session survived the lock but its approval didn't")
+    }
+
+    func testRefusedSessionIsNotAskedAgainUntilLock() async throws {
+        let sid = try await connect()
+        allow.value = false
+        await host.setLocked(false)
+        for _ in 0..<2 {
+            let (_, _, body) = try await post(call, session: sid)
+            XCTAssertTrue(body.contains("refused this connection"), body)
+        }
+        XCTAssertEqual(asked.value, 1)
+        await host.setLocked(true)
+        await host.setLocked(false)
+        allow.value = true
+        let (_, _, body) = try await post(call, session: sid)
+        XCTAssertTrue(body.contains("pong"), body)
+        XCTAssertEqual(asked.value, 2)
+    }
+
+    /// Unlocked, a new session still asks at initialize, as before, and a refusal is a 403.
+    func testUnlockedAsksAtInitialize() async throws {
+        await host.setLocked(false)
+        allow.value = false
+        let (denied, _, _) = try await post(initialize)
+        XCTAssertEqual(denied, 403)
+        XCTAssertEqual(asked.value, 1)
+        allow.value = true
+        let sid = try await connect()
+        XCTAssertEqual(asked.value, 2)
+        let (_, _, body) = try await post(call, session: sid)
+        XCTAssertTrue(body.contains("pong"), body)
+        XCTAssertEqual(asked.value, 2)
+    }
+
+    func testToolCallDetection() {
+        XCTAssertEqual(toolCall(in: Data(call.utf8)), .single(id: "7"))
+        XCTAssertEqual(toolCall(in: Data(#"{"jsonrpc":"2.0","id":"a","method":"tools/call"}"#.utf8)), .single(id: #""a""#))
+        XCTAssertEqual(toolCall(in: Data(("[" + call + "]").utf8)), .batch)
+        XCTAssertNil(toolCall(in: Data(#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.utf8)))
+        XCTAssertNil(toolCall(in: Data("not json".utf8)))
     }
 }
 

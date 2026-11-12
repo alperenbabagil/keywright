@@ -111,21 +111,76 @@ func isInitialize(_ body: Data) -> Bool {
     return o["method"] as? String == "initialize" && o["id"] != nil
 }
 
+/// The tool calls in a JSON-RPC body: nil when there are none, else whether it is a single
+/// request (with its id, to answer it) or a batch holding at least one.
+enum ToolCallBody: Equatable {
+    case single(id: String)
+    case batch
+}
+
+func toolCall(in body: Data) -> ToolCallBody? {
+    let json = try? JSONSerialization.jsonObject(with: body)
+    if let o = json as? [String: Any] {
+        guard o["method"] as? String == "tools/call" else { return nil }
+        return .single(id: rpcIDText(o["id"] ?? NSNull()))
+    }
+    if let a = json as? [[String: Any]], a.contains(where: { $0["method"] as? String == "tools/call" }) { return .batch }
+    return nil
+}
+
+/// [v] as compact JSON text ("7", "\"abc\"", "null").
+private func rpcIDText(_ v: Any) -> String {
+    guard let d = try? JSONSerialization.data(withJSONObject: [v], options: [.fragmentsAllowed]),
+          let s = String(data: d, encoding: .utf8) else { return "null" }
+    return String(s.dropFirst().dropLast())
+}
+
+/// What a tool call gets instead of running: a tool error the agent can read and act on.
+public enum CallRefusal {
+    public static let locked = "Keywright is locked: ask the user to unlock it (Touch ID or password in the Keywright menu), then retry. Don't work around it by calling the endpoint from other processes; they are refused too."
+    public static let refused = "The Mac's owner refused this connection: Keywright won't run tools for this process until it's locked and unlocked again."
+    public static let unidentified = "Keywright couldn't identify the process on the other end of this connection, so it can't ask the owner to approve it."
+}
+
 /// Creates and finds MCP sessions. Each `initialize` gets a fresh Server + stateful transport.
+///
+/// While locked, clients can still connect (`initialize`, `tools/list`, …) so their tools load,
+/// but every `tools/call` is refused and nobody is asked to approve anything. A session made
+/// while locked asks for approval at its first tool call after unlocking; locking clears every
+/// session's approval, so the next call asks again.
 actor SessionRouter {
-    /// [owner] is the process the session was approved for (nil when approval is off).
-    struct Session { let server: Server; let transport: StatefulHTTPServerTransport; var lastUsed: Date; let owner: Int32? }
+    /// [owner] is the process the session was approved (or is waiting to be approved) for; nil
+    /// when approval is off. [approved] is false until the owner has said yes since the last lock;
+    /// [refused] once they said no.
+    struct Session {
+        let server: Server; let transport: StatefulHTTPServerTransport; var lastUsed: Date; let owner: Int32?
+        var approved: Bool; var refused = false
+    }
     private var sessions: [String: Session] = [:]
     private let factory: @Sendable () async throws -> Server
     private let idleTimeout: TimeInterval
-    /// Asked before each new session; nil = every authenticated client may start one.
+    /// Asked before a session's first tool call (or at `initialize` when unlocked); nil = every
+    /// authenticated client may run tools.
     var approve: (@Sendable (PeerProcess?) async -> Bool)?
+    private(set) var locked: Bool
+    /// Bumped by every lock, so an approval that finishes after a lock doesn't count.
+    private var epoch = 0
 
     func setApprove(_ f: (@Sendable (PeerProcess?) async -> Bool)?) { approve = f }
 
-    init(factory: @escaping @Sendable () async throws -> Server, idleTimeout: TimeInterval) {
+    func setLocked(_ l: Bool) {
+        guard l != locked else { return }
+        locked = l
+        if l {
+            epoch += 1
+            for sid in sessions.keys { sessions[sid]?.approved = false; sessions[sid]?.refused = false }
+        }
+    }
+
+    init(factory: @escaping @Sendable () async throws -> Server, idleTimeout: TimeInterval, locked: Bool = false) {
         self.factory = factory
         self.idleTimeout = idleTimeout
+        self.locked = locked
     }
 
     var count: Int { sessions.count }
@@ -140,6 +195,10 @@ actor SessionRouter {
             }
             s.lastUsed = Date()
             sessions[sid] = s
+            if request.method.uppercased() == "POST", let body = request.body, let call = toolCall(in: body),
+               let refusal = await gate(sid, peer: peer) {
+                return Self.refuse(call, refusal)
+            }
             let resp = await s.transport.handleRequest(request)
             if request.method.uppercased() == "DELETE", resp.statusCode == 200 {
                 sessions.removeValue(forKey: sid)
@@ -149,14 +208,51 @@ actor SessionRouter {
         }
         if request.method.uppercased() == "POST", let body = request.body, isInitialize(body) {
             if let approve {
-                guard await approve(peer) else {
-                    return .error(statusCode: 403, .invalidRequest("Forbidden: the Mac's owner did not approve this connection"))
+                if locked {
+                    // Connect now, ask at the first tool call after unlocking. Someone we can't
+                    // identify could never be asked, so they're refused as before.
+                    guard peer != nil else { _ = await approve(nil); return Self.forbidden }
+                    return await create(request, owner: peer?.pid, approved: false)
                 }
+                guard await approve(peer) else { return Self.forbidden }
             }
-            return await create(request, owner: approve == nil ? nil : peer?.pid)
+            return await create(request, owner: approve == nil ? nil : peer?.pid, approved: true)
         }
         if sid != nil { return .error(statusCode: 404, .invalidRequest("Not Found: Session not found or expired")) }
         return .error(statusCode: 400, .invalidRequest("Bad Request: Missing \(HTTPHeaderName.sessionID) header"))
+    }
+
+    private static let forbidden = HTTPResponse.error(statusCode: 403, .invalidRequest("Forbidden: the Mac's owner did not approve this connection"))
+
+    /// Nil when session [sid] may run a tool now; otherwise why not. Asks the owner (once per
+    /// session per unlock) when the session isn't approved yet.
+    private func gate(_ sid: String, peer: PeerProcess?) async -> String? {
+        if locked { return CallRefusal.locked }
+        guard let s = sessions[sid] else { return CallRefusal.locked }
+        if s.approved || approve == nil { return nil }
+        if s.refused { return CallRefusal.refused }
+        guard let approve, let peer else {
+            _ = await self.approve?(nil)
+            return CallRefusal.unidentified
+        }
+        let before = epoch
+        let ok = await approve(peer)
+        // Re-read after the wait: a lock while the prompt was up wins over its answer.
+        if locked || epoch != before { return CallRefusal.locked }
+        if ok { sessions[sid]?.approved = true; return nil }
+        sessions[sid]?.refused = true
+        return CallRefusal.refused
+    }
+
+    /// A refused tool call: a tool error with [text] for a single call; a batch gets 403.
+    private static func refuse(_ call: ToolCallBody, _ text: String) -> HTTPResponse {
+        guard case .single(let id) = call else {
+            return .error(statusCode: 403, .invalidRequest("Forbidden: \(text)"))
+        }
+        let result: [String: Any] = ["content": [["type": "text", "text": text]], "isError": true]
+        let body = (try? JSONSerialization.data(withJSONObject: result)) ?? Data("{}".utf8)
+        let json = #"{"jsonrpc":"2.0","id":"# + id + #","result":"# + String(decoding: body, as: UTF8.self) + "}"
+        return .data(Data(json.utf8), headers: ["Content-Type": "application/json"])
     }
 
     private struct FixedID: SessionIDGenerator {
@@ -164,13 +260,13 @@ actor SessionRouter {
         func generateSessionID() -> String { id }
     }
 
-    private func create(_ request: HTTPRequest, owner: Int32?) async -> HTTPResponse {
+    private func create(_ request: HTTPRequest, owner: Int32?, approved: Bool) async -> HTTPResponse {
         let sid = UUID().uuidString
         let transport = StatefulHTTPServerTransport(sessionIDGenerator: FixedID(id: sid))
         do {
             let server = try await factory()
             try await server.start(transport: transport)
-            sessions[sid] = Session(server: server, transport: transport, lastUsed: Date(), owner: owner)
+            sessions[sid] = Session(server: server, transport: transport, lastUsed: Date(), owner: owner, approved: approved)
             let resp = await transport.handleRequest(request)
             if case .error = resp {
                 sessions.removeValue(forKey: sid)
@@ -217,10 +313,29 @@ public final class MCPHTTPHost: @unchecked Sendable {
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private let connLock = NSLock()
     private var stopped = false
-    /// Asked before every new MCP session with the connecting process (nil if it couldn't be
-    /// found); return false to refuse it with 403. Approved sessions then only answer that pid.
+    /// Asked with the connecting process (nil if it couldn't be found) before a session may run
+    /// tools: at `initialize` while unlocked, else at its first tool call after unlocking. Return
+    /// false to refuse it. Sessions then only answer that pid.
     public func setApproveSession(_ f: (@Sendable (PeerProcess?) async -> Bool)?) async {
         await router.setApprove(f)
+    }
+
+    /// Locked: clients still connect and list tools, but every tool call is refused and nobody is
+    /// asked for approval. Locking also clears every session's approval and cuts open
+    /// connections, so a client waiting on a running call gets an error at once.
+    public func setLocked(_ locked: Bool) async {
+        await router.setLocked(locked)
+        if locked { dropConnections() }
+    }
+
+    /// Cuts every open connection without closing the listener or the sessions.
+    public func dropConnections() {
+        let open = connLock.withLock { () -> [NWConnection] in
+            let all = Array(connections.values)
+            connections.removeAll()
+            return all
+        }
+        for c in open { c.cancel() }
     }
 
     /// Called (on an arbitrary queue) for each request: method, path, status.
@@ -229,7 +344,7 @@ public final class MCPHTTPHost: @unchecked Sendable {
     public var onState: (@Sendable (String?) -> Void)?
 
     public init(host: String = "127.0.0.1", port: UInt16, endpoint: String = "/mcp",
-                idleTimeout: TimeInterval = 6 * 3600,
+                idleTimeout: TimeInterval = 6 * 3600, locked: Bool = false,
                 headerTimeout: TimeInterval = 10, requestTimeout: TimeInterval = 30,
                 token: @escaping @Sendable () -> String,
                 serverFactory: @escaping @Sendable () async throws -> Server) {
@@ -239,7 +354,7 @@ public final class MCPHTTPHost: @unchecked Sendable {
         self.requestTimeout = requestTimeout
         self.endpoint = endpoint
         self.token = token
-        self.router = SessionRouter(factory: serverFactory, idleTimeout: idleTimeout)
+        self.router = SessionRouter(factory: serverFactory, idleTimeout: idleTimeout, locked: locked)
     }
 
     /// The bound port (useful when started with port 0).

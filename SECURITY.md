@@ -8,16 +8,19 @@ permissions you grant it. Its safeguards:
   Keychain. The menu never shows it; copying or regenerating it needs Touch ID, and a copied token
   is cleared from the clipboard after 60 s.
 - Every new MCP session needs the owner's approval (Touch ID or password), which names the
-  connecting program, its pid and the app it runs in. A session then answers only that process,
-  and Lock forgets every approval. A stolen token is useless on its own.
+  connecting program, its pid and the app it runs in. A session that connected while locked asks
+  at its first tool call after unlocking. A session answers only its own process, and Lock
+  forgets every approval. A stolen token is useless on its own.
 - The app is signed with the hardened runtime, so no other process can inject code into it
   (`DYLD_INSERT_LIBRARIES`) or attach a debugger and use its permissions.
 - Settings that affect safety (auto-lock limits, `refuseKeysTo`, `humanQuietMs`, the port) are
   read at launch only, so `defaults write` while Keywright runs changes nothing.
-- The app starts locked. The server doesn't listen until a human unlocks it with Touch ID or the
-  Mac login password, so a process that can launch the app gains nothing.
-- **Lock** stops the server and every tool call, including one already running; a result that
-  finishes after the lock is thrown away, and a recording cut short is deleted.
+- The app starts locked. The server listens, so clients can connect and list tools, but every
+  tool call is refused (and no approval is asked for) until a human unlocks it with Touch ID or
+  the Mac login password, so a process that can launch the app gains nothing. Listening while
+  locked also keeps the port, so no other process can take it and collect the token.
+- **Lock** refuses every tool call, including one already running; a result that finishes after
+  the lock is thrown away, and a recording cut short is deleted.
 - Input tools (clicks, keys, scrolls, AX actions) refuse while a security dialog is on screen:
   permission prompts, password and Touch ID sheets, Gatekeeper, the screen-sharing picker. An
   agent can't approve a permission for itself that would outlive the lock.

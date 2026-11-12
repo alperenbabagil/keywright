@@ -121,7 +121,8 @@ Code. The details are in [Quick start](#quick-start) below.
 
 **Security**
 
-- Starts locked. The MCP server doesn't even listen until you unlock it with Touch ID or your password.
+- Starts locked. Agents can connect and see the tools, but every tool call is refused until you
+  unlock with Touch ID or your password.
 - Approve each agent: every new connection names the program behind it ("claude (pid 4242) in
   Terminal") and waits for your Touch ID. A stolen token or session ID gets 403.
 - Auto-lock after a stretch of no tool calls (default 15 min) and at a hard limit after unlocking
@@ -206,12 +207,18 @@ LaunchServices starts it (`open` or a login item), never a shell running the bin
 
 ## How the lock works
 
-Keywright starts **locked**: the MCP server doesn't listen until you unlock it with Touch ID or
+Keywright starts **locked**: every tool call is refused until you unlock it with Touch ID or
 your Mac login password (macOS asks right after launch; if you cancel, use **Unlock…** in the
 menu). Anything can launch the app (`open`, a script, an agent, a login item), and launching it
 with any arguments only starts the menu-bar server, so launching gives nothing away; only a human
-at the Mac can switch the server on. **Lock** in the menu stops the server again. While locked,
-Claude Code sessions just can't connect to `keywright`.
+at the Mac can unlock it. **Lock** in the menu locks it again.
+
+The server keeps listening while locked, so a Claude Code session started then still connects
+and loads the `keywright` tools (the token is still checked). Each call returns a tool error
+("Keywright is locked: ask the user to unlock it…"); nothing clicks, types or captures the screen,
+and nobody is asked to approve a connection for a locked app. Once you unlock, the agent's next
+call works. Holding the port also means no other program can listen there while Keywright is
+locked and collect the token from clients that connect.
 
 Lock (and Quit) also stops a tool call that is already running: typing, a drag, a wait, a `when`
 trigger or a screen recording stops within about 0.1 s, a recording cut short is deleted, and a
@@ -227,8 +234,10 @@ The token alone isn't enough: Claude Code keeps it in plain text in `~/.claude.j
 process running as you could read it. So every new MCP session waits for you. Keywright finds the
 process on the other end of the connection and asks, with Touch ID or your password, "let claude
 (pid 4242) in Terminal control this Mac through Keywright", with the program's full path. Refuse,
-and the client gets 403. An approved process isn't asked again until you lock; Lock forgets every
-approval. A session only answers the process it was approved for, so another program that learns
+and the client gets 403. A session that connected while Keywright was locked asks at its first
+tool call after you unlock instead; refuse, and its calls fail until the next lock. An approved
+process isn't asked again until you lock; Lock forgets every approval, so each session asks again
+at its first call after the next unlock (it stays connected). A session only answers the process it was approved for, so another program that learns
 its session ID gets 403 too, and a process Keywright can't identify is refused without asking.
 Each `keywright-run` is a new process, so each run asks once.
 

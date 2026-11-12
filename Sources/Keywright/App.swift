@@ -1,9 +1,10 @@
 // The menu-bar app: hosts the MCP server and shows permissions, the connection command,
 // Pause, recent tool calls and Launch at login.
 //
-// It starts locked: the MCP server doesn't listen until a human unlocks it with Touch ID or the
-// Mac's login password. Anything can launch the app (`open`, a script, an agent), so launching
-// alone must never hand out Keywright's Accessibility / Screen Recording grants.
+// It starts locked: the MCP server listens, so agents can connect and load their tools, but every
+// tool call is refused until a human unlocks it with Touch ID or the Mac's login password.
+// Anything can launch the app (`open`, a script, an agent), so launching alone must never hand
+// out Keywright's Accessibility / Screen Recording grants.
 import AppKit
 import LocalAuthentication
 import KeywrightCore
@@ -115,6 +116,9 @@ final class AppState: ObservableObject {
         RunLoop.main.add(t, forMode: .common)
         timer = t
         Hotkey.register { AppState.shared.togglePause() }
+        // Listening while locked: clients connect and load the tools, calls are refused. It also
+        // keeps the port, so no other process can take it and collect the token from clients.
+        startServer()
         unlock()
         // Event taps must be serviced promptly; keep App Nap from throttling this menu-bar app.
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
@@ -125,7 +129,7 @@ final class AppState: ObservableObject {
     }
 
     func startServer() {
-        let host = MCPHTTPHost(port: Self.port, token: { AppState.currentToken }, serverFactory: { await Tools.makeServer() })
+        let host = MCPHTTPHost(port: Self.port, locked: true, token: { AppState.currentToken }, serverFactory: { await Tools.makeServer() })
         let approvals = self.approvals
         // Before listening, so no session can start unapproved.
         let gate = DispatchSemaphore(value: 0)
@@ -148,7 +152,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Asks the human for Touch ID or the login password, then starts the server.
+    /// Asks the human for Touch ID or the login password, then lets tool calls run.
     func unlock() {
         guard locked, !unlocking else { return }
         unlocking = true
@@ -159,7 +163,7 @@ final class AppState: ObservableObject {
             defer { unlocking = false }
             do {
                 guard try await ctx.evaluatePolicy(.deviceOwnerAuthentication,
-                                                   localizedReason: "start the Keywright server, which lets agents control this Mac. It locks again \(limits.summary)") else { return }
+                                                   localizedReason: "unlock Keywright, which lets agents control this Mac. It locks again \(limits.summary)") else { return }
                 locked = false
                 lockReason = nil
                 unlockedAt = Date()
@@ -167,14 +171,16 @@ final class AppState: ObservableObject {
                 Control.shared.setLocked(false)
                 Log.write("unlocked by the owner (auto-lock \(limits.summary))")
                 updateAutoLockIn()
-                startServer()
+                if host == nil { startServer() }  // couldn't listen at launch: try again
+                if let host { Task { await host.setLocked(false) } }
             } catch {
                 Log.write("unlock refused: \(error.localizedDescription)")
             }
         }
     }
 
-    /// Stops the server; it needs a new unlock to start again. [reason] is set when it locks itself.
+    /// Refuses every tool call until the next unlock, stops a running one and forgets every
+    /// approval. The server keeps listening. [reason] is set when it locks itself.
     func lock(reason: String? = nil) {
         guard !locked else { return }
         // First, so a call that is running right now stops at its next check.
@@ -182,9 +188,7 @@ final class AppState: ObservableObject {
         _ = FocusWatch.shared.stop()
         AudioRecorder.discardAll(reason: "locked")
         Driver.shared.releaseAll()
-        host?.stop()
-        host = nil
-        serverError = nil
+        if let host { Task { await host.setLocked(true) } }
         locked = true
         unlockedAt = nil
         approvedClients = []
@@ -192,7 +196,7 @@ final class AppState: ObservableObject {
         Task { await approvals.reset() }
         lockReason = reason
         autoLockIn = nil
-        Log.write("locked: MCP server stopped" + (reason.map { " (auto-lock: \($0))" } ?? ""))
+        Log.write("locked: tool calls refused, approvals forgotten" + (reason.map { " (auto-lock: \($0))" } ?? ""))
     }
 
     // MARK: Connection approval
@@ -369,13 +373,14 @@ struct MenuContent: View {
 
     var body: some View {
         if state.locked {
-            Text("🔒 Locked — the MCP server is off")
+            Text("🔒 Locked — agents can connect, every tool call is refused")
             if let why = state.lockReason { Text("Locked itself: \(why)") }
             Button(state.unlocking ? "Waiting for Touch ID or password…" : "Unlock…") { state.unlock() }
                 .disabled(state.unlocking)
-        } else if let err = state.serverError {
+        }
+        if let err = state.serverError {
             Text("⚠️ \(err)")
-        } else {
+        } else if !state.locked {
             Text("MCP server: \(AppState.serverAddress)")
         }
         if !state.locked {
@@ -389,7 +394,7 @@ struct MenuContent: View {
             }
             Text((state.paused ? "Paused — tool calls fail with \"paused\"" : (state.busy ? "Running a tool call…" : "Ready"))
                  + (state.autoLockIn.map { " · \($0)" } ?? ""))
-            Button("Lock (stop the server)") { state.lock() }
+            Button("Lock (refuse every tool call)") { state.lock() }
         }
         Divider()
         Section("Permissions") {
