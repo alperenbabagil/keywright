@@ -368,7 +368,7 @@ action. Calls run one at a time.
 | Chrome | `chrome_profiles {channel?}` (directory, name, signed-in email), `open_chrome {urls?, profile?, newWindow?, incognito?, guest?, appUrl?, channel?, userDataDir?, remoteDebuggingPort?, args?}` (works whether Chrome is running or not; `profile` takes a directory, display name or email; returns the new window ids) |
 | Accessibility | `ax_tree {app,window?,maxDepth=8,includeMenuBar?}`, `ax_find`, `ax_press`, `ax_set_value`, `ax_focus` (each takes `path` or `query`), `menu_extra {app,itemPath,method: press\|click}` (status-item menu, e.g. an app's tray menu; `click` = real clicks, a user action), `menu {app,itemPath}`, `status_items {app?}`, `click_status_item {pid \| app, index, method: click\|press}` |
 | Clipboard | `clipboard_get {types?}`, `clipboard_set {text \| fileUrls}`, `clipboard_change_count` |
-| Waiting | `wait_for_window {app,titleContains?,timeoutMs}`, `wait_for_ax {app,query,timeoutMs}`, `sleep {ms}` |
+| Waiting | `wait_for_window {app,titleContains?,timeoutMs}`, `wait_for_ax {app,query,timeoutMs}`, `sleep {ms}`, `say {event: start\|end}` (says aloud "Started/Ended controlling your Mac with Keywright" in an English voice) |
 
 Notes:
 

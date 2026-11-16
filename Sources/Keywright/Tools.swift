@@ -604,6 +604,36 @@ enum Tools {
                 usleep(200_000)
             }
         },
+        ToolDef(name: "say", description: "Tell the person at the Mac, out loud, that you started or ended controlling it: {event: \"start\"} says \"Started controlling your Mac with Keywright\", {event: \"end\"} says \"Ended controlling your Mac with Keywright\". Call start once before your first action and end once when you're finished. Waits until it has finished speaking.",
+                schema: S.object(["event": ["type": "string", "enum": ["start", "end"], "description": "start or end"]], required: ["event"])) { a in
+            let text: String
+            switch try a.reqString("event") {
+            case "start": text = "Started controlling your Mac with Keywright"
+            case "end": text = "Ended controlling your Mac with Keywright"
+            case let e: throw ToolError("event must be start or end, not '\(e)'")
+            }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+            // The sentence is English, so the voice must be too (the system voice may be another language).
+            p.arguments = (Speech.englishVoice.map { ["-v", $0] } ?? []) + ["--", text]
+            p.standardOutput = FileHandle.nullDevice
+            let err = Pipe()
+            p.standardError = err
+            try p.run()
+            let start = Date()
+            while p.isRunning {
+                do { try Control.shared.checkPaused() } catch { p.terminate(); throw error }
+                if Date().timeIntervalSince(start) > 30 { p.terminate(); break }
+                sleepMs(50)
+            }
+            p.waitUntilExit()
+            if p.terminationStatus != 0 {
+                let msg = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                throw ToolError("say failed" + (msg.isEmpty ? "" : ": \(msg)"))
+            }
+            return ToolOutput(["spoke": text, "voice": Speech.englishVoice ?? "system default", "ms": Int(Date().timeIntervalSince(start) * 1000)])
+        },
         ToolDef(name: "sleep", description: "Wait ms milliseconds (max 60000).",
                 schema: S.object(["ms": S.num("Milliseconds")], required: ["ms"])) { a in
             var left = min(60_000, max(0, try a.req("ms")))
@@ -735,6 +765,7 @@ enum Tools {
 
     static let instructions = """
         Use Keywright first for anything that needs a macOS privacy permission: seeing the screen (Screen Recording), clicking, typing or reading UI (Accessibility, Input Monitoring), the microphone or cameras. Never ask macOS or the user to grant those permissions to your terminal, IDE, shell or any helper process, never trigger a system permission prompt for them, and never run scripts (screencapture, osascript, cliclick, Python, etc.) that would need them; Keywright already holds them, behind its owner's lock. If Keywright is locked, ask the user to unlock it from the Keywright menu and retry. Only if Keywright truly can't do the job, tell the user what is missing and let them decide; don't request a permission yourself.
+        Call say {event: "start"} once before your first action and say {event: "end"} once when you're finished, so the person at the Mac hears that you started and ended controlling it.
         Drives this Mac's mouse, keyboard, screen, accessibility and clipboard for end-to-end tests. Coordinates are CoreGraphics global points (origin top-left of the main display, y down). Relative moves post deltas like a physical mouse; use push_edge to cross a display edge.
         Every result carries humanInput: input Keywright did not post (the human's mouse, trackpad, keys, scrolls, or another app's events) — sinceLastCall, duringCall, kinds, msAgo. If it is non-zero around a step, the human may have interfered: re-check the screen before trusting the step. Input tools take humanQuietMs to refuse while the human is active.
         watch: true on an input tool returns observed (what a tap saw), read after a fence event so slow delivery is waited for; observed.complete=false means a tap is not receiving Keywright's events at all.
@@ -754,4 +785,34 @@ enum Tools {
         await server.withMethodHandler(CallTool.self) { params in await Tools.call(params.name, params.arguments) }
         return server
     }
+}
+
+/// Picks an installed English voice for `say`: a known good one, else any English voice that isn't a novelty one.
+enum Speech {
+    static let englishVoice: String? = {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        p.arguments = ["-v", "?"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        // "Samantha            en_US    # Hello! My name is Samantha."
+        let voices: [(name: String, lang: String)] = (String(data: data, encoding: .utf8) ?? "")
+            .split(separator: "\n").compactMap { line in
+                guard let m = line.range(of: #"\s+[a-z]{2,3}_[A-Za-z0-9]+\s+#"#, options: .regularExpression) else { return nil }
+                let name = line[..<m.lowerBound].trimmingCharacters(in: .whitespaces)
+                let lang = line[m].trimmingCharacters(in: CharacterSet(charactersIn: " #"))
+                return (name, lang)
+            }
+        let english = voices.filter { $0.lang.hasPrefix("en_") }
+        for preferred in ["Samantha", "Alex", "Daniel", "Karen", "Moira", "Tessa"] where english.contains(where: { $0.name == preferred }) {
+            return preferred
+        }
+        let novelty: Set<String> = ["Albert", "Bad News", "Bahh", "Bells", "Boing", "Bubbles", "Cellos", "Good News", "Jester",
+                                    "Organ", "Superstar", "Trinoids", "Whisper", "Wobble", "Zarvox", "Junior", "Ralph", "Kathy", "Fred"]
+        return english.first { !novelty.contains($0.name) }?.name
+    }()
 }
