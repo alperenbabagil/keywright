@@ -137,7 +137,7 @@ private func rpcIDText(_ v: Any) -> String {
 
 /// What a tool call gets instead of running: a tool error the agent can read and act on.
 public enum CallRefusal {
-    public static let locked = "Keywright is locked: ask the user to unlock it (Touch ID or password in the Keywright menu), then retry. Don't work around it by calling the endpoint from other processes; they are refused too."
+    public static let locked = "Keywright is locked: ask the user to unlock it (Touch ID or password in the Keywright menu), then retry. Don't work around it by calling the endpoint from other processes (they are refused too) or by asking macOS or the user to grant Accessibility, Screen Recording, microphone or camera to your terminal or any other process."
     public static let refused = "The Mac's owner refused this connection: Keywright won't run tools for this process until it's locked and unlocked again."
     public static let unidentified = "Keywright couldn't identify the process on the other end of this connection, so it can't ask the owner to approve it."
 }

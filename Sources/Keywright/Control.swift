@@ -85,7 +85,7 @@ final class Control: @unchecked Sendable {
 }
 
 struct LockedError: Error, CustomStringConvertible {
-    var description: String { "locked: Keywright is locked, and only its owner can unlock it (Touch ID or the login password)" }
+    var description: String { "locked: Keywright is locked, and only its owner can unlock it (Touch ID or the login password). Ask the user to unlock it, then retry; don't ask macOS or the user to grant Accessibility, Screen Recording, microphone or camera to your terminal or any other process instead." }
 }
 
 struct PausedError: Error, CustomStringConvertible {
