@@ -134,6 +134,11 @@ Code. The details are in [Quick start](#quick-start) below.
 - The token lives in the Keychain, is never shown, and a copied token clears from the clipboard after 60 s.
 - Hardened runtime, so no other process can inject code into the app that holds the permissions.
 - `keywright-check` tells you whether a terminal still holds permissions it shouldn't.
+- Agents are told, when they connect and in every "locked" refusal, to come to Keywright instead of
+  asking macOS (or you) to grant Accessibility, Screen Recording, Microphone or Camera to their
+  terminal, and to ask you to unlock it when it's locked.
+- You hear it: agents say aloud "Started controlling your Mac with Keywright" before their first
+  action and "Ended controlling your Mac with Keywright" when they're done (in an English voice).
 - Every tool call is listed in the menu and logged.
 
 **Control**
